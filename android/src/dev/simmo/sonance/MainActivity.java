@@ -3,6 +3,8 @@ package dev.simmo.sonance;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
@@ -29,7 +31,7 @@ import java.io.IOException;
  * S1: loading (W1), viewport (W2), settings and hardening (W3), first frame (W6), logging (W7),
  * and the debug-only harness hooks. S2: key translation (K1, K2), renderer recovery (W4), the
  * renderer's priority (W5) and exit (S4). S3: playback (PlayerEngine, A1-A4) and the screen saver
- * (S5). The service joins in S4.
+ * (S5). S4: the foreground service (B1) and, in debug builds, the audio-focus drill (B2).
  */
 public class MainActivity extends Activity {
     static final String TAG = "Sonance";
@@ -39,6 +41,7 @@ public class MainActivity extends Activity {
     private static final String SHIM_ASSET = "www/$WEBAPIS/webapis/webapis.js";
     private static final String SHIM_PATH_SUFFIX = "/$WEBAPIS/webapis/webapis.js";
     private static final String EXTRA_URL = "sonance_url";
+    private static final String EXTRA_FOCUS_DRILL = "sonance_focus_drill";
     private static final String CRASH_URL = "chrome://crash";
 
     // index.html's viewport meta: the app is laid out for 1920 CSS px, as on the Q90R.
@@ -80,17 +83,28 @@ public class MainActivity extends Activity {
     private WebView webView;
     private PlayerEngine engine;
 
+    // B1, on the UI thread: the activity is visible (onStart to onStop); the page has played since
+    // the service last stopped; the service has been started.
+    private boolean visible;
+    private boolean serviceWanted;
+    private boolean serviceStarted;
+    // Debug builds: the drill's focus request, which takes the focus from the player (B2).
+    private AudioFocusRequest drill;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // B1: a service still running here played for an earlier activity, whose WebView is gone.
+        if (PlaybackService.stop(this)) Log.i(TAG, "[Sonance] service: stopped one left by an earlier activity");
         // Set by aapt2 link --debug-mode only, so a release APK can never turn DevTools on (W7, P1).
         debug = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(debug);
-        engine = new PlayerEngine(message -> runOnUiThread(() -> toPage(message)));
+        engine = new PlayerEngine(this, message -> runOnUiThread(() -> toPage(message)));
         webView = createWebView();
         setContentView(webView);
         String url = debugUrl(getIntent());
         webView.loadUrl(url != null ? url : APP_URL);
+        focusDrill(getIntent());
     }
 
     @Override
@@ -99,11 +113,32 @@ public class MainActivity extends Activity {
         setIntent(intent);
         String url = debugUrl(intent);
         if (url != null) webView.loadUrl(url);
+        focusDrill(intent);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        visible = true;
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        startService();
+    }
+
+    @Override
+    protected void onStop() {
+        visible = false;
+        super.onStop();
     }
 
     @Override
     protected void onDestroy() {
         engine.quit();
+        stopService("the activity ends");
+        if (drill != null) getSystemService(AudioManager.class).abandonAudioFocusRequest(drill);
         if (webView != null) {
             webView.destroy();
             webView = null;
@@ -227,23 +262,62 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * S4: the page's exit() stops and releases the player, then ends the task. The service joins
-     * in S4.
+     * B1: the page asked the engine to play. The service starts on the first play, and only while
+     * the activity is visible: Android 12+ refuses a foreground-service start from the background.
+     * A play that lands after the user left (the bridge call is posted here) starts it on return.
+     */
+    void playing() {
+        serviceWanted = true;
+        startService();
+    }
+
+    private void startService() {
+        if (!serviceWanted || serviceStarted) return;
+        if (!visible) {
+            Log.i(TAG, "[Sonance] service: not started while hidden; it starts when Sonance is back in front");
+            return;
+        }
+        try {
+            PlaybackService.start(this);
+            serviceStarted = true;
+            Log.i(TAG, "[Sonance] service: started");
+        } catch (IllegalStateException e) {
+            // ForegroundServiceStartNotAllowedException (31+) is one: tried again on the next resume.
+            Log.w(TAG, "[Sonance] service: start refused: " + e.getMessage());
+        }
+    }
+
+    /** B1: kept between tracks, and stopped only on exit, renderer loss and the activity's end. */
+    private void stopService(String why) {
+        serviceWanted = false;
+        serviceStarted = false;
+        if (PlaybackService.stop(this)) Log.i(TAG, "[Sonance] service: stopping (" + why + ")");
+    }
+
+    /** B1: the current track's title, for the notification. */
+    void nowPlaying(String title) {
+        PlaybackService.setTitle(title);
+    }
+
+    /**
+     * S4: the page's exit() stops and releases the player and the service, then ends the task.
      */
     void exitApp() {
         Log.i(TAG, "[Sonance] exit");
         engine.release();
+        stopService("exit");
         finishAndRemoveTask();
     }
 
     /**
      * W4: the renderer is gone (a crash, or a low-memory kill). This WebView can never draw again.
      * Playback stops first (step 1), so nothing plays for a page that no longer exists, and the
-     * screen may sleep again. Then a new WebView boots the app as a fresh launch, and the dead one
-     * is destroyed. The service stops here too, from S4.
+     * screen may sleep again, and the service stops (B1). Then a new WebView boots the app as a
+     * fresh launch, and the dead one is destroyed.
      */
     private void replaceWebView() {
         engine.release();
+        stopService("renderer gone");
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         WebView dead = webView;
         webView = createWebView();
@@ -315,6 +389,45 @@ public class MainActivity extends Activity {
         if (isDebugUrl(Uri.parse(url))) return url;
         Log.w(TAG, "[Sonance] ignored " + EXTRA_URL + " (http://localhost or " + CRASH_URL + " only)");
         return null;
+    }
+
+    /**
+     * Debug builds only (B2's drill, prompt §A5): sonance_focus_drill=gain|transient|duck makes a
+     * second focus request with its own listener, which takes the focus from the player as another
+     * app would (permanent loss, transient loss, duck). Any other value (e.g. "release") abandons
+     * it, and the focus goes back to the player if its request is still on the stack.
+     */
+    private void focusDrill(Intent intent) {
+        if (!debug || intent == null) return;
+        String kind = intent.getStringExtra(EXTRA_FOCUS_DRILL);
+        if (kind == null) return;
+        AudioManager audio = getSystemService(AudioManager.class);
+        if (drill != null) {
+            audio.abandonAudioFocusRequest(drill);
+            drill = null;
+        }
+        int gain;
+        switch (kind) {
+            case "gain":
+                gain = AudioManager.AUDIOFOCUS_GAIN;
+                break;
+            case "transient":
+                gain = AudioManager.AUDIOFOCUS_GAIN_TRANSIENT;
+                break;
+            case "duck":
+                gain = AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK;
+                break;
+            default:
+                Log.i(TAG, "[Sonance] focus drill: released");
+                return;
+        }
+        drill = new AudioFocusRequest.Builder(gain)
+                .setAudioAttributes(PlayerEngine.ATTRIBUTES)
+                .setOnAudioFocusChangeListener(change -> Log.i(TAG, "[Sonance] focus drill: change " + change))
+                .build();
+        int result = audio.requestAudioFocus(drill);
+        Log.i(TAG, "[Sonance] focus drill: " + kind + " -> "
+                + (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED ? "granted" : "result " + result));
     }
 
     private boolean isDebugUrl(Uri uri) {

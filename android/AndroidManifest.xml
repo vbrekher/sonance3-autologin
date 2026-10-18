@@ -49,6 +49,10 @@
             </intent-filter>
         </activity>
 
-        <!-- D216: the mediaPlayback <service> (P2) is declared in S4 with its class (B1). -->
+        <!-- B1: keeps Sonance playing in the background. Started only by the app itself. -->
+        <service
+            android:name=".PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

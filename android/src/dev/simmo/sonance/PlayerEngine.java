@@ -1,6 +1,9 @@
 package dev.simmo.sonance;
 
+import android.content.Context;
 import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Handler;
@@ -26,6 +29,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * a stream it has already closed. Events go to the Sink as JavaScript object literals for
  * SonanceShim.receive.
  *
+ * B2: the engine also holds the audio focus. Each play requests it; when another app takes it, the
+ * page is told to pause (and, after a transient loss, to resume), and a duck lowers the volume
+ * here without telling the page. The focus listener runs on this thread too.
+ *
  * MediaPlayer stays behind this one class (§2.2), so a later engine swap touches only this file.
  */
 final class PlayerEngine {
@@ -36,8 +43,8 @@ final class PlayerEngine {
 
     // A2: 5 Hz, inside the 4-10 Hz player.js's progress throttle expects.
     private static final int TICK_MS = 200;
-    // A1: usage MEDIA, content MUSIC.
-    private static final AudioAttributes ATTRIBUTES = new AudioAttributes.Builder()
+    // A1: usage MEDIA, content MUSIC. B2's focus requests use the same.
+    static final AudioAttributes ATTRIBUTES = new AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build();
@@ -55,15 +62,25 @@ final class PlayerEngine {
     private static final int SLOW_PREPARE_MS = 2000;
     private static final int STATUS_TIMEOUT_MS = 5000;
 
+    // B2: a duck plays at 20 % until the focus comes back.
+    private static final float DUCK_VOLUME = 0.2f;
+    private static final String FOCUS_PAUSE = "{type:'focus',action:'pause'}";
+    private static final String FOCUS_RESUME = "{type:'focus',action:'resume'}";
+
     private final AtomicInteger lastId = new AtomicInteger();
     private final HandlerThread thread = new HandlerThread("SonancePlayer");
     private final Handler handler;
     // D224's status checks: network I/O, so never on the player thread.
     private final ExecutorService statusChecks = Executors.newSingleThreadExecutor();
     private final Sink sink;
+    private final AudioManager audio;
+    private final AudioFocusRequest focusRequest;
 
     // The player thread only.
     private Session current;
+    // B2: a transient loss paused the page, so the regain resumes it; a duck lowered the volume.
+    private boolean transientLoss;
+    private boolean ducked;
 
     /** One opened stream: AVPlay's open() to close(). */
     private static final class Session {
@@ -73,6 +90,8 @@ final class PlayerEngine {
         boolean preparing;
         boolean prepared;
         boolean playing;
+        // start() has been called since the stream was prepared: pause() is valid only then.
+        boolean started;
         boolean failed;
         // A position has been reported: the stream has played (D224).
         boolean ticked;
@@ -89,10 +108,20 @@ final class PlayerEngine {
         }
     }
 
-    PlayerEngine(Sink sink) {
+    PlayerEngine(Context context, Sink sink) {
         this.sink = sink;
         thread.start();
         handler = new Handler(thread.getLooper());
+        audio = context.getSystemService(AudioManager.class);
+        // D228: willPauseWhenDucked, so a duck reaches the listener and the engine ducks itself.
+        // Without it Android 8+ ducks other apps' players by itself and the listener never hears
+        // of it, while a request from Sonance's own uid (the drill) is never ducked by the system:
+        // the drill and a real app would then take different paths.
+        focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(ATTRIBUTES)
+                .setWillPauseWhenDucked(true)
+                .setOnAudioFocusChangeListener(this::onFocusChange, handler)
+                .build();
     }
 
     // --- Commands: called on the bridge's binder thread, run on the player thread. ---
@@ -118,9 +147,12 @@ final class PlayerEngine {
         });
     }
 
+    /** B2: each play requests the focus first; refused, the stream stays unstarted (D229). */
     void play(int id) {
         command(id, "play", true, s -> {
+            if (!requestFocus()) return;
             s.player.start();
+            s.started = true;
             s.playing = true;
             startTicks();
         });
@@ -129,7 +161,8 @@ final class PlayerEngine {
     void pause(int id) {
         command(id, "pause", true, s -> {
             stopTicks(s);
-            s.player.pause();
+            // MediaPlayer's pause() in Prepared is an error (-38): a play refused the focus (D229).
+            if (s.started) s.player.pause();
         });
     }
 
@@ -146,6 +179,7 @@ final class PlayerEngine {
             stopTicks(s);
             s.seeks.clear();
             endPreparing(s);
+            s.started = false;
             if (s.prepared) {
                 s.player.stop();
                 s.prepared = false;
@@ -164,9 +198,12 @@ final class PlayerEngine {
         });
     }
 
-    /** W4 and S4: stops and releases whatever plays, whichever page opened it. */
+    /** W4 and S4: stops and releases whatever plays, whichever page opened it, and the focus. */
     void release() {
-        handler.post(this::releaseCurrent);
+        handler.post(() -> {
+            releaseCurrent();
+            abandonFocus();
+        });
     }
 
     /** The activity is gone: release the player, then end the thread once the queue is done. */
@@ -255,10 +292,12 @@ final class PlayerEngine {
                 + MainActivity.describe(Uri.parse(url)));
     }
 
-    /** The stream and its attributes, on a new or reset player. */
-    private static void load(Session s) {
+    /** The stream, its attributes and the volume (a duck's, B2), on a new or reset player. */
+    private void load(Session s) {
         try {
             s.player.setAudioAttributes(ATTRIBUTES);
+            float volume = ducked ? DUCK_VOLUME : 1f;
+            s.player.setVolume(volume, volume);
             s.player.setDataSource(s.url);
             s.loadError = null;
         } catch (IOException e) {
@@ -343,6 +382,74 @@ final class PlayerEngine {
         current.player.release();
         Log.i(MainActivity.TAG, "[Sonance] player " + current.id + ": released");
         current = null;
+    }
+
+    // --- B2: audio focus, on the player thread. ---
+
+    /**
+     * Requests the focus for a play, which takes it from any other app (the user chose to play).
+     * D229: refused (a call in progress), the page is told to pause, as for a loss, and the stream
+     * stays unstarted.
+     */
+    private boolean requestFocus() {
+        int result = audio.requestAudioFocus(focusRequest);
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            transientLoss = false;
+            setDucked(false);
+            return true;
+        }
+        Log.w(MainActivity.TAG, "[Sonance] focus: refused (" + result + "): pausing");
+        sink.send(FOCUS_PAUSE);
+        return false;
+    }
+
+    /**
+     * Another app took the focus (B2). A loss pauses the page through the shim, as the Stop key
+     * does; after a transient one the regain resumes it (the shim resumes only what that pause
+     * paused). A duck lowers this engine's volume, and the page is not told.
+     */
+    private void onFocusChange(int change) {
+        switch (change) {
+            case AudioManager.AUDIOFOCUS_LOSS:
+                transientLoss = false;
+                setDucked(false);
+                Log.i(MainActivity.TAG, "[Sonance] focus: lost: pausing");
+                sink.send(FOCUS_PAUSE);
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                transientLoss = true;
+                Log.i(MainActivity.TAG, "[Sonance] focus: lost for now: pausing");
+                sink.send(FOCUS_PAUSE);
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                setDucked(true);
+                break;
+            case AudioManager.AUDIOFOCUS_GAIN:
+                setDucked(false);
+                Log.i(MainActivity.TAG, "[Sonance] focus: regained" + (transientLoss ? ": resuming" : ""));
+                if (transientLoss) {
+                    transientLoss = false;
+                    sink.send(FOCUS_RESUME);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** The volume of the open stream, and of any opened while ducked (load). */
+    private void setDucked(boolean duck) {
+        if (duck == ducked) return;
+        ducked = duck;
+        float volume = duck ? DUCK_VOLUME : 1f;
+        if (current != null) current.player.setVolume(volume, volume);
+        Log.i(MainActivity.TAG, "[Sonance] focus: " + (duck ? "duck" : "unduck") + ", volume " + volume);
+    }
+
+    private void abandonFocus() {
+        audio.abandonAudioFocusRequest(focusRequest);
+        transientLoss = false;
+        setDucked(false);
     }
 
     // A2: oncurrentplaytime every 200 ms while playing, from this thread's Handler.
