@@ -42,11 +42,12 @@ final class PlayerEngine {
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build();
 
-    // A3: AVPlay-style errors. The shim turns NOT_SUPPORTED into the format toast's
-    // NotSupportedError, CONNECTION into a NetworkError, and anything else into an UnknownError.
+    // A3: AVPlay's own AVPlayError values (D225). The shim gives a failed prepare's error callback
+    // NotSupportedError for NOT_SUPPORTED, the format toast's cause, and UnknownError otherwise.
     static final String ERROR_NOT_SUPPORTED = "PLAYER_ERROR_NOT_SUPPORTED_FILE";
     static final String ERROR_CONNECTION = "PLAYER_ERROR_CONNECTION_FAILED";
-    static final String ERROR_GENERIC = "PLAYER_ERROR_GENERIC";
+    // Samsung's spelling.
+    static final String ERROR_GENERIC = "PLAYER_ERROR_GENEREIC";
 
     // D224: MediaPlayer's HTTP cache retries a failed request ten times, 3 s apart, so an HTTP
     // error status fails a prepare only after about 30 s. A prepare still pending after this long

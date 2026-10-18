@@ -374,36 +374,61 @@ test.describe('A1 AVPlay on the bridge', () => {
     ]);
   });
 
-  test('a call in the wrong state throws InvalidStateError, as AVPlay does, and reaches nothing', async ({ page }) => {
+  // D225: the states each call is allowed in are Samsung's AVPlay reference's. A call in the wrong
+  // state throws InvalidStateError and reaches nothing; prepareAsync and seekTo never throw, and
+  // report it to their error callback instead.
+  test('a call in the wrong state throws InvalidStateError, as AVPlay does, or reports it to its error callback', async ({ page }) => {
     await boot(page, { bridge: true, auto: false });
     const n = await bridgeCount(page);
-    const r = await page.evaluate(() => {
+    const r = await page.evaluate(() => new Promise((resolve) => {
       const w = window as any, av = w.webapis.avplay, out: string[] = [];
       const tryIt = (label: string, f: () => void) => {
         try { f(); out.push(label + ' ok ' + av.getState()); } catch (e) { out.push(label + ' ' + (e as any).name + ' ' + av.getState()); }
       };
+      const ok = (label: string) => () => out.push(label + ': ok');
+      const err = (label: string) => (e: any) => out.push(label + ': ' + e.name);
       const noop = () => {};
       ['play', 'pause', 'stop'].forEach((m) => tryIt(m, () => av[m]()));
-      tryIt('prepareAsync', () => av.prepareAsync(noop, noop));
-      tryIt('seekTo', () => av.seekTo(1000));
+      tryIt('setDisplayRect', () => av.setDisplayRect(0, 0, 1, 1));
+      tryIt('prepareAsync', () => av.prepareAsync(ok('prepareAsync in NONE'), err('prepareAsync in NONE')));
+      tryIt('seekTo', () => av.seekTo(1000, ok('seekTo in NONE'), err('seekTo in NONE')));
       av.open('http://localhost/rest/stream.view?id=song-0');
-      tryIt('open', () => av.open('http://localhost/rest/stream.view?id=song-1'));
       ['play', 'pause'].forEach((m) => tryIt(m, () => av[m]()));
-      tryIt('seekTo', () => av.seekTo(1000));
       av.prepareAsync(noop, noop);
       w.SonanceShim.receive({ type: 'player', session: w.__engine.last, event: 'prepared', duration: 20000 });
-      tryIt('prepareAsync', () => av.prepareAsync(noop, noop));
       tryIt('pause', () => av.pause());
-      return out;
-    });
+      tryIt('open', () => av.open('http://localhost/rest/stream.view?id=song-1'));
+      tryIt('prepareAsync', () => av.prepareAsync(ok('prepareAsync in READY'), err('prepareAsync in READY')));
+      setTimeout(() => resolve(out), 50);
+    }));
     expect(r).toEqual([
-      'play InvalidStateError NONE', 'pause InvalidStateError NONE', 'stop InvalidStateError NONE',
-      'prepareAsync InvalidStateError NONE', 'seekTo InvalidStateError NONE',
-      'open InvalidStateError IDLE', 'play InvalidStateError IDLE', 'pause InvalidStateError IDLE',
-      'seekTo InvalidStateError IDLE',
-      'prepareAsync InvalidStateError READY', 'pause InvalidStateError READY'
+      'play InvalidStateError NONE', 'pause InvalidStateError NONE', 'stop ok NONE',
+      'setDisplayRect InvalidStateError NONE', 'prepareAsync ok NONE', 'seekTo ok NONE',
+      'play InvalidStateError IDLE', 'pause InvalidStateError IDLE',
+      'pause InvalidStateError READY', 'open InvalidStateError READY', 'prepareAsync ok READY',
+      'prepareAsync in NONE: InvalidStateError', 'seekTo in NONE: InvalidStateError', 'prepareAsync in READY: ok'
     ]);
     expect(await playerCalls(page, n)).toEqual(['open song-0', 'prepare 1']);
+  });
+
+  test('open in IDLE replaces the opened stream; a seekTo in IDLE takes effect once it is prepared (D225)', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const n = await bridgeCount(page);
+    const r = await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay, out: string[] = [];
+      av.open('http://localhost/rest/stream.view?id=song-0');
+      av.open('http://localhost/rest/stream.view?id=song-1');
+      av.setListener({ oncurrentplaytime: (ms: number) => out.push('tick ' + ms) });
+      av.seekTo(3000, () => out.push('seek ok'), () => out.push('seek err'));
+      av.prepareAsync(() => out.push('prepared ' + av.getState()), () => out.push('prepare err'));
+      const id = w.__engine.last;
+      w.SonanceShim.receive({ type: 'player', session: id, event: 'prepared', duration: 20000 });
+      const seek = w.__bridgeCalls.filter((c: any[]) => c[0] === 'playerSeek').pop();
+      w.SonanceShim.receive({ type: 'player', session: id, event: 'seeked', seek: seek[3], position: 3000 });
+      return out;
+    });
+    expect(r).toEqual(['prepared READY', 'seek ok', 'tick 3000']);
+    expect(await playerCalls(page, n)).toEqual(['open song-0', 'close 1', 'open song-1', 'prepare 2', 'seek 2 3000']);
   });
 
   test('the session guard: an event from an earlier session is dropped', async ({ page }) => {
@@ -515,7 +540,7 @@ test.describe('A3 errors', () => {
       };
       failedLoad('PLAYER_ERROR_NOT_SUPPORTED_FILE');
       failedLoad('PLAYER_ERROR_CONNECTION_FAILED');
-      failedLoad('PLAYER_ERROR_GENERIC');
+      failedLoad('PLAYER_ERROR_GENEREIC');
       av.close();
       av.open('http://localhost/rest/stream.view?id=song-1');
       av.setListener(listener);
@@ -531,8 +556,8 @@ test.describe('A3 errors', () => {
     });
     expect(r).toEqual([
       'err NotSupportedError PLAYER_ERROR_NOT_SUPPORTED_FILE format', 'IDLE',
-      'err NetworkError PLAYER_ERROR_CONNECTION_FAILED load', 'IDLE',
-      'err UnknownError PLAYER_ERROR_GENERIC load', 'IDLE',
+      'err UnknownError PLAYER_ERROR_CONNECTION_FAILED load', 'IDLE',
+      'err UnknownError PLAYER_ERROR_GENEREIC load', 'IDLE',
       'tick 200', 'onerror PLAYER_ERROR_CONNECTION_FAILED'
     ]);
   });

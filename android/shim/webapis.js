@@ -65,22 +65,32 @@
     var failed = false;        // an error ended the session: nothing more from it reaches the app
     var seeks = {};            // seek id -> its ok callback, until the engine's "seeked"
     var nextSeek = 1;
+    var startAt = null;        // a seekTo made in IDLE, { ms, ok }: the engine seeks once prepared
+
+    // D225: the states each call is allowed in are those of Samsung's AVPlay API reference.
+    function stateError(call) {
+        var e = new Error(call + '() is not allowed in state ' + avState);
+        e.name = 'InvalidStateError';
+        return e;
+    }
 
     // A call in the wrong state throws, as AVPlay's WebAPIException does, and reaches nothing.
     function allow(call, states) {
-        if (states.indexOf(avState) > -1) return;
-        var e = new Error(call + '() is not allowed in state ' + avState);
-        e.name = 'InvalidStateError';
-        throw e;
+        if (states.indexOf(avState) < 0) throw stateError(call);
     }
 
-    // A3: prepareAsync's error callback gets a WebAPIException, as on Tizen. Its name is the type
-    // (NotSupportedError for media the engine cannot read, which player.js's _avplayCause turns
-    // into the format toast) and its message the engine's AVPlay-style error.
+    // A callback on a later task, as AVPlay's are.
+    function later(callback, arg) {
+        if (typeof callback === 'function') setTimeout(function() { callback(arg); }, 0);
+    }
+
+    // A3: prepareAsync's error callback gets a WebAPIException, as on Tizen: NotSupportedError for
+    // media the engine cannot play (player.js's _avplayCause turns it into the format toast), and
+    // UnknownError otherwise (D225: the reference lists no network type). Its message is the
+    // engine's AVPlayError value.
     function webApiError(text) {
         var e = new Error(text);
-        e.name = /NOT_SUPPORTED/.test(text) ? 'NotSupportedError'
-            : (/CONNECTION/.test(text) ? 'NetworkError' : 'UnknownError');
+        e.name = /NOT_SUPPORTED/.test(text) ? 'NotSupportedError' : 'UnknownError';
         return e;
     }
 
@@ -88,28 +98,47 @@
         if (listener && typeof listener[name] === 'function') listener[name](arg);
     }
 
-    function endSession() {
-        session = 0;
-        listener = null;
+    function seek(ms, ok) {
+        var id = nextSeek++;
+        seeks[id] = ok;
+        bridge.playerSeek(session, Math.round(ms), id);
+    }
+
+    // What belongs to the stream opened now.
+    function dropStream() {
         duration = 0;
         preparing = null;
         seeks = {};
+        startAt = null;
     }
 
     var avplay = {
+        // In IDLE, the stream opened (and not yet prepared) is replaced.
         open: function(url) {
-            allow('open', ['NONE']);
+            allow('open', ['NONE', 'IDLE']);
+            if (avState === 'IDLE') {
+                bridge.playerClose(session);
+                dropStream();
+            }
             session = bridge.playerOpen(String(url));
             avState = 'IDLE';
             failed = false;
         },
         // Audio only: nothing is drawn.
-        setDisplayRect: noop,
+        setDisplayRect: function() {
+            allow('setDisplayRect', ['IDLE', 'READY', 'PLAYING', 'PAUSED']);
+        },
         setListener: function(l) { listener = l; },
+        // Never throws: a wrong state reaches the error callback. Already prepared, it succeeds.
         prepareAsync: function(ok, err) {
-            allow('prepareAsync', ['IDLE']);
-            preparing = { ok: ok, err: err };
-            bridge.playerPrepare(session);
+            if (avState === 'READY') {
+                later(ok);
+            } else if (avState !== 'IDLE') {
+                later(err, stateError('prepareAsync'));
+            } else {
+                preparing = { ok: ok, err: err };
+                bridge.playerPrepare(session);
+            }
         },
         play: function() {
             allow('play', ['READY', 'PLAYING', 'PAUSED']);
@@ -124,24 +153,32 @@
             bridge.playerPause(session);
         },
         // A1: the engine seeks to the closest frame. ok follows its completion, then the position.
-        seekTo: function(ms, ok) {
-            allow('seekTo', ['READY', 'PLAYING', 'PAUSED']);
-            var id = nextSeek++;
-            seeks[id] = ok;
-            bridge.playerSeek(session, Math.round(ms), id);
+        // Never throws: a wrong state reaches the error callback. In IDLE, MediaPlayer cannot seek
+        // yet, so the seek waits for the stream to be prepared.
+        seekTo: function(ms, ok, err) {
+            if (avState === 'IDLE') {
+                startAt = { ms: ms, ok: ok };
+            } else if (avState === 'NONE') {
+                later(err, stateError('seekTo'));
+            } else {
+                seek(ms, ok);
+            }
         },
         stop: function() {
-            allow('stop', ['IDLE', 'READY', 'PLAYING', 'PAUSED']);
+            if (avState === 'NONE') return;
             avState = 'IDLE';
             preparing = null;
             seeks = {};
+            startAt = null;
             bridge.playerStop(session);
         },
         close: function() {
             if (avState === 'NONE') return;
             bridge.playerClose(session);
             avState = 'NONE';
-            endSession();
+            session = 0;
+            listener = null;
+            dropStream();
         },
         getState: function() { return avState; },
         getDuration: function() { return duration; }
@@ -159,6 +196,11 @@
             preparing = null;
             duration = msg.duration;
             avState = 'READY';
+            if (startAt) {
+                var at = startAt;
+                startAt = null;
+                seek(at.ms, at.ok);
+            }
             if (p.ok) p.ok();
         } else if (e === 'error') {
             failed = true;
