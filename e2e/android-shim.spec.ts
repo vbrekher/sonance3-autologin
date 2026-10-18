@@ -596,14 +596,15 @@ test.describe('App playback on the bridge', () => {
     await expect.poll(async () => (await state()).at).toBeGreaterThanOrEqual(10.2);
     const first = await page.evaluate(() => (window as any).__engine.last);
     await native(page, [{ type: 'player', session: first, event: 'completed' }]);
-    await expect.poll(state).toMatchObject({ id: 'song-1', playing: true });
-    expect(await playerCalls(page, n)).toEqual([
+    // isPlaying stays true across the track change, so wait for the engine's calls instead.
+    await expect.poll(() => playerCalls(page, n)).toEqual([
       'open song-0', 'prepare 1', 'play 1', 'keepScreenOn true',
       'pause 1', 'keepScreenOn false',
       'play 1', 'keepScreenOn true',
       'seek 1 10000',
       'stop 1', 'close 1', 'open song-1', 'prepare 2', 'play 2', 'keepScreenOn true'
     ]);
+    expect(await state()).toMatchObject({ id: 'song-1', playing: true });
   });
 
   test('A4 a transcode streams as MP3 and seeks by reloading with timeOffset, never seekTo', async ({ page }) => {
