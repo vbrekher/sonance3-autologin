@@ -13,9 +13,10 @@
 // - tizen.application.getCurrentApplication().exit(): the host's exit (S4);
 // - tizen.tvaudiocontrol.setVolume: a no-op (Player.setVolume has no caller);
 // - window.SonancePlatform: the names the platform seam shows (S3);
-// - window.SonanceShim.receive(msg): the one entry point for native calls (keys, player events and
-//   callbacks). Its presence is also the host's sign that the shim has loaded on the current page
-//   (D220).
+// - window.SonanceShim.receive(msg): the one entry point for native calls (keys, player events,
+//   callbacks and audio focus). Its presence is also the host's sign that the shim has loaded on
+//   the current page (D220);
+// - the current track's title, for the host's notification (B1).
 (function() {
     'use strict';
 
@@ -66,6 +67,8 @@
     var seeks = {};            // seek id -> its ok callback, until the engine's "seeked"
     var nextSeek = 1;
     var startAt = null;        // a seekTo made in IDLE, { ms, ok }: the engine seeks once prepared
+    var heldSession = 0;       // D227: a focus pause came while this session prepared
+    var held = false;          // its first play was held, and the app must be told it is paused
 
     // D225: the states each call is allowed in are those of Samsung's AVPlay API reference.
     function stateError(call) {
@@ -110,6 +113,7 @@
         preparing = null;
         seeks = {};
         startAt = null;
+        heldSession = 0;
     }
 
     var avplay = {
@@ -143,7 +147,17 @@
         play: function() {
             allow('play', ['READY', 'PLAYING', 'PAUSED']);
             if (avState === 'PLAYING') return;
+            // D227: the app plays as its prepare succeeds, whatever happened meanwhile. After a
+            // focus pause, that play stays in the page (the engine never starts, so the focus is
+            // not taken back) and the stream waits, paused, for the next play.
+            if (avState === 'READY' && heldSession === session) {
+                heldSession = 0;
+                held = true;
+                avState = 'PAUSED';
+                return;
+            }
             avState = 'PLAYING';
+            focusPaused = false;
             bridge.playerPlay(session);
         },
         pause: function() {
@@ -202,6 +216,11 @@
                 seek(at.ms, at.ok);
             }
             if (p.ok) p.ok();
+            // D227: the app's play was held; its pause path makes it show paused.
+            if (held) {
+                held = false;
+                if (window.Player) window.Player.pause();
+            }
         } else if (e === 'error') {
             failed = true;
             var q = preparing;
@@ -249,7 +268,44 @@
 
     window.webapis = { avplay: avplay, appcommon: appcommon };
 
-    var handlers = { key: injectKey, player: onPlayer, callback: onCallback };
+    // B2: audio focus, from the host's PlayerEngine.
+    // - 'pause': another app took the audio. Sonance pauses as the Stop key does (Player.pause(),
+    //   focus.js 10253), so the UI shows paused. A stream still preparing is held (D227).
+    // - 'resume': a transient loss is over. Sonance plays again only if that pause paused it; any
+    //   play since (the user's) clears that, as does a pause the user made first.
+    // A duck is the host's alone (the volume), so the page is not told; other actions are ignored.
+    var focusPaused = false;
+
+    function onFocus(msg) {
+        var player = window.Player;
+        if (!player) return;
+        var isPlaying = player.getState().isPlaying;
+        if (msg.action === 'pause') {
+            var loading = preparing !== null;
+            if (loading) heldSession = session;
+            focusPaused = isPlaying || loading;
+            if (isPlaying) player.pause();
+        } else if (msg.action === 'resume') {
+            var resume = focusPaused && !isPlaying;
+            focusPaused = false;
+            if (resume) player.play();
+        }
+    }
+
+    // B1: the host's notification shows the current track's title. The app's bundles load after
+    // this file, so the shim subscribes once they have run.
+    var lastTitle = '';
+    document.addEventListener('DOMContentLoaded', function() {
+        if (!window.Player || typeof window.Player.on !== 'function') return;
+        window.Player.on('trackchange', function(track) {
+            var title = track && track.title ? String(track.title) : '';
+            if (title === lastTitle) return;
+            lastTitle = title;
+            bridge.nowPlaying(title);
+        });
+    });
+
+    var handlers = { key: injectKey, player: onPlayer, callback: onCallback, focus: onFocus };
 
     window.SonanceShim = {
         receive: function(msg) {
