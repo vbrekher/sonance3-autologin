@@ -6,6 +6,7 @@ import * as H from './helpers/sonance';
 // - Part 1 (S2): the shim's tizen.* parts, the platform seam (S3), key injection (K1) and the bridge
 //   calls (S4).
 // - Part 2 (S3): webapis.avplay over the bridge (A1-A4) and webapis.appcommon (S5).
+// - Part 3 (S4): audio focus from the host (B2) and the notification's title (B1).
 //
 // The Android host serves android/shim/webapis.js where Tizen serves webapis.js; here it is routed
 // to that path (the dev server 404s it). A fake window.SonanceNative, injected before any page
@@ -83,7 +84,8 @@ async function fakeBridge(page: Page, opts: { auto?: boolean } = {}) {
       setKeepScreenOn(keep: boolean, callback: number) {
         calls.push(['setKeepScreenOn', keep, callback]);
         if (engine.auto) later({ type: 'callback', id: callback });
-      }
+      },
+      nowPlaying(title: string) { calls.push(['nowPlaying', title]); }
     };
   }, opts.auto !== false);
 }
@@ -305,7 +307,7 @@ test.describe('S1 no bridge, no shim', () => {
 // The bridge calls the player and the screen saver made since call `from`, compactly: a stream by
 // its song id (and a transcode by its format and offset), a seek by its session and ms.
 const playerCalls = (page: Page, from: number) => page.evaluate((n) => (window as any).__bridgeCalls.slice(n)
-  .filter((c: any[]) => c[0] !== 'androidVersion' && c[0] !== 'exit')
+  .filter((c: any[]) => c[0] !== 'androidVersion' && c[0] !== 'exit' && c[0] !== 'nowPlaying')
   .map((c: any[]) => {
     if (c[0] === 'playerOpen') {
       const q = new URL(c[1], location.href).searchParams;
@@ -645,5 +647,168 @@ test.describe('App playback on the bridge', () => {
       'open song-4 mp3', 'prepare 1', 'play 1', 'keepScreenOn true',
       'stop 1', 'close 1', 'open song-4 mp3 @8', 'prepare 2', 'play 2', 'keepScreenOn true'
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Part 3 (S4): audio focus (B2) and the notification's title (B1). The host's PlayerEngine holds
+// the focus; when another app takes it, the host sends {type:'focus', action:'pause'}, and after a
+// transient loss {action:'resume'}. A duck is the host's alone (the volume), so the page is not told.
+// ---------------------------------------------------------------------------------------------
+
+const focus = (page: Page, action: string) => native(page, [{ type: 'focus', action }]);
+
+// Every Player.pause() and Player.play() call, from any caller (focus.js and the shim both call the
+// global Player).
+async function countPlayerCalls(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__pp = { pause: 0, play: 0 };
+    ['pause', 'play'].forEach((m) => {
+      const orig = w.Player[m];
+      w.Player[m] = function() { w.__pp[m]++; return orig.apply(this, arguments as any); };
+    });
+  });
+}
+
+const npBarIcon = (page: Page) => page.evaluate(() => {
+  const d = document.querySelector('#now-playing-bar .play-btn-main svg path')!.getAttribute('d');
+  const P = (window as any).SonanceUtils.SVG_PATHS;
+  return d === P.play ? 'play' : d === P.pause ? 'pause' : d;
+});
+
+const avState = (page: Page) => page.evaluate(() => (window as any).webapis.avplay.getState());
+
+test.describe('B2 audio focus', () => {
+  test('a focus pause pauses through Player.pause(), as the Stop key does: the UI shows paused, the engine pauses', async ({ page }) => {
+    await boot(page, { bridge: true });
+    await H.startTrack(page, 2);
+    await playing(page, true);
+    expect(await npBarIcon(page)).toBe('pause');
+    await countPlayerCalls(page);
+    const n = await bridgeCount(page);
+    await focus(page, 'pause');
+    await playing(page, false);
+    expect(await page.evaluate(() => (window as any).__pp)).toEqual({ pause: 1, play: 0 });
+    expect(await playerCalls(page, n)).toEqual(['pause 1', 'keepScreenOn false']);
+    expect(await avState(page)).toBe('PAUSED');
+    expect(await npBarIcon(page)).toBe('play');
+  });
+
+  test('a resume after a focus pause plays again, through Player.play()', async ({ page }) => {
+    await boot(page, { bridge: true });
+    await H.startTrack(page, 2);
+    await playing(page, true);
+    await countPlayerCalls(page);
+    await focus(page, 'pause');
+    await playing(page, false);
+    const n = await bridgeCount(page);
+    await focus(page, 'resume');
+    await playing(page, true);
+    expect(await page.evaluate(() => (window as any).__pp)).toEqual({ pause: 1, play: 1 });
+    expect(await playerCalls(page, n)).toEqual(['play 1', 'keepScreenOn true']);
+    expect(await npBarIcon(page)).toBe('pause');
+    // A second resume, with nothing paused by focus, does nothing.
+    await focus(page, 'resume');
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as any).__pp)).toEqual({ pause: 1, play: 1 });
+  });
+
+  test('after the user pauses, a resume does nothing', async ({ page }) => {
+    await boot(page, { bridge: true });
+    await H.startTrack(page, 2);
+    await playing(page, true);
+    await countPlayerCalls(page);
+    const quiet = async () => {
+      await page.waitForTimeout(300);
+      expect(await page.evaluate(() => (window as any).Player.getState().isPlaying)).toBe(false);
+    };
+    // (1) The user pauses first; then another app takes the focus and gives it back.
+    await press(page, 10252, 'MediaPlayPause');
+    await playing(page, false);
+    let n = await bridgeCount(page);
+    await focus(page, 'pause');
+    await focus(page, 'resume');
+    await quiet();
+    expect(await playerCalls(page, n)).toEqual([]);
+    // (2) Focus pauses it; the user plays, then pauses; then the focus comes back.
+    await press(page, 10252, 'MediaPlayPause');
+    await playing(page, true);
+    await focus(page, 'pause');
+    await playing(page, false);
+    await press(page, 10252, 'MediaPlayPause');
+    await playing(page, true);
+    await press(page, 10252, 'MediaPlayPause');
+    await playing(page, false);
+    n = await bridgeCount(page);
+    await focus(page, 'resume');
+    await quiet();
+    expect(await playerCalls(page, n)).toEqual([]);
+    expect(await npBarIcon(page)).toBe('play');
+  });
+
+  test('a duck changes nothing in the page; a focus message with nothing loaded does nothing', async ({ page }) => {
+    const errors = H.watchErrors(page);
+    await boot(page, { bridge: true });
+    // Nothing loaded yet.
+    await focus(page, 'pause');
+    await focus(page, 'resume');
+    await H.startTrack(page, 2);
+    await playing(page, true);
+    await countPlayerCalls(page);
+    const n = await bridgeCount(page);
+    const at = await page.evaluate(() => (window as any).Player.getState().currentTime);
+    await focus(page, 'duck');
+    await focus(page, 'unduck');
+    await page.waitForTimeout(600);
+    expect(await page.evaluate(() => (window as any).__pp)).toEqual({ pause: 0, play: 0 });
+    expect(await playerCalls(page, n)).toEqual([]);
+    expect(await page.evaluate(() => (window as any).Player.getState().currentTime)).toBeGreaterThan(at);
+    expect(await npBarIcon(page)).toBe('pause');
+    expect(errors.pageErrors).toEqual([]);
+  });
+
+  // D227: player.js's prepare callback plays whatever happened while the stream prepared, so a
+  // focus pause during a load would be undone, and Sonance would play over the other app.
+  test('a focus pause while a track loads holds its start: it never plays, the app shows paused, and a resume plays it', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const n = await bridgeCount(page);
+    await page.evaluate(() => (window as any).Player.setQueue((window as any).__MOCK__.songs.slice(0, 3), 0));
+    await expect.poll(() => playerCalls(page, n)).toEqual(['open song-0', 'prepare 1']);
+    await focus(page, 'pause');
+    await native(page, [{ type: 'player', session: 1, event: 'prepared', duration: 20000 }]);
+    await page.waitForTimeout(300);
+    expect(await playerCalls(page, n)).toEqual(['open song-0', 'prepare 1', 'keepScreenOn true', 'keepScreenOn false']);
+    expect(await page.evaluate(() => (window as any).Player.getState().isPlaying)).toBe(false);
+    expect(await avState(page)).toBe('PAUSED');
+    expect(await npBarIcon(page)).toBe('play');
+    const m = await bridgeCount(page);
+    await focus(page, 'resume');
+    await playing(page, true);
+    expect(await playerCalls(page, m)).toEqual(['play 1', 'keepScreenOn true']);
+    expect(await avState(page)).toBe('PLAYING');
+  });
+
+  test('without a focus pause, a load plays as before', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const n = await bridgeCount(page);
+    await page.evaluate(() => (window as any).Player.setQueue((window as any).__MOCK__.songs.slice(0, 3), 0));
+    await expect.poll(() => playerCalls(page, n)).toEqual(['open song-0', 'prepare 1']);
+    await native(page, [{ type: 'player', session: 1, event: 'prepared', duration: 20000 }]);
+    await playing(page, true);
+    expect(await playerCalls(page, n)).toEqual(['open song-0', 'prepare 1', 'play 1', 'keepScreenOn true']);
+  });
+});
+
+test.describe('B1 the notification\'s title', () => {
+  test('each track change gives the bridge the track\'s title', async ({ page }) => {
+    await boot(page, { bridge: true });
+    const titles = () => page.evaluate(() => (window as any).__bridgeCalls
+      .filter((c: any[]) => c[0] === 'nowPlaying').map((c: any[]) => c[1]));
+    expect(await titles()).toEqual([]);
+    await H.startTrack(page, 3);
+    await expect.poll(titles).toEqual(['Track 01']);
+    await press(page, 10417, 'MediaFastForward');
+    await expect.poll(titles).toEqual(['Track 01', 'Track 02']);
   });
 });
