@@ -9,6 +9,7 @@ import android.util.Log;
 import android.util.SparseArray;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
@@ -27,7 +28,8 @@ import java.io.IOException;
  *
  * S1: loading (W1), viewport (W2), settings and hardening (W3), first frame (W6), logging (W7),
  * and the debug-only harness hooks. S2: key translation (K1, K2), renderer recovery (W4), the
- * renderer's priority (W5) and exit (S4). Playback and the service join in S3 and S4.
+ * renderer's priority (W5) and exit (S4). S3: playback (PlayerEngine, A1-A4) and the screen saver
+ * (S5). The service joins in S4.
  */
 public class MainActivity extends Activity {
     static final String TAG = "Sonance";
@@ -76,6 +78,7 @@ public class MainActivity extends Activity {
 
     private boolean debug;
     private WebView webView;
+    private PlayerEngine engine;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -83,6 +86,7 @@ public class MainActivity extends Activity {
         // Set by aapt2 link --debug-mode only, so a release APK can never turn DevTools on (W7, P1).
         debug = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(debug);
+        engine = new PlayerEngine(message -> runOnUiThread(() -> toPage(message)));
         webView = createWebView();
         setContentView(webView);
         String url = debugUrl(getIntent());
@@ -99,6 +103,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        engine.quit();
         if (webView != null) {
             webView.destroy();
             webView = null;
@@ -142,9 +147,29 @@ public class MainActivity extends Activity {
      * every key on that page.
      */
     private void injectKey(String action, TizenKey key, boolean repeat) {
+        toPage("{type:'key',action:'" + action + "',keyCode:" + key.code + ",key:'" + key.name
+                + "',repeat:" + repeat + "}");
+    }
+
+    /**
+     * A message for the shim's one entry point, on the UI thread (evaluateJavascript's thread).
+     * Keys, player events and callbacks share the one queue, so each kind keeps its order. The
+     * guard drops messages before the shim has loaded on the current page (D220).
+     */
+    private void toPage(String message) {
         if (webView == null) return;
-        webView.evaluateJavascript("window.SonanceShim&&SonanceShim.receive({type:'key',action:'" + action
-                + "',keyCode:" + key.code + ",key:'" + key.name + "',repeat:" + repeat + "})", null);
+        webView.evaluateJavascript("window.SonanceShim&&SonanceShim.receive(" + message + ")", null);
+    }
+
+    /**
+     * S5: SCREEN_SAVER_OFF sets FLAG_KEEP_SCREEN_ON, which keeps Ambient Mode away while Sonance
+     * plays in front; SCREEN_SAVER_ON clears it. Then the page's success callback.
+     */
+    void keepScreenOn(boolean keep, int callback) {
+        Log.i(TAG, "[Sonance] keep screen on: " + keep);
+        if (keep) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        toPage("{type:'callback',id:" + callback + "}");
     }
 
     /**
@@ -201,18 +226,25 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** S4: the page's exit(). The player and the service join in S3 and S4. */
+    /**
+     * S4: the page's exit() stops and releases the player, then ends the task. The service joins
+     * in S4.
+     */
     void exitApp() {
         Log.i(TAG, "[Sonance] exit");
+        engine.release();
         finishAndRemoveTask();
     }
 
     /**
-     * W4: the renderer is gone (a crash, or a low-memory kill). This WebView can never draw again:
-     * replace it with a new one that boots the app as a fresh launch, then destroy it. The player
-     * and the service stop here too, from S3 and S4.
+     * W4: the renderer is gone (a crash, or a low-memory kill). This WebView can never draw again.
+     * Playback stops first (step 1), so nothing plays for a page that no longer exists, and the
+     * screen may sleep again. Then a new WebView boots the app as a fresh launch, and the dead one
+     * is destroyed. The service stops here too, from S4.
      */
     private void replaceWebView() {
+        engine.release();
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         WebView dead = webView;
         webView = createWebView();
         setContentView(webView);
@@ -258,7 +290,7 @@ public class MainActivity extends Activity {
         // B3). Its timers are never paused: no pauseTimers(), which would stop every WebView's.
         wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
 
-        wv.addJavascriptInterface(new NativeBridge(this), "SonanceNative");
+        wv.addJavascriptInterface(new NativeBridge(this, engine), "SonanceNative");
         wv.setWebViewClient(new Client());
         wv.setWebChromeClient(new Chrome());
         wv.setFocusable(true);
@@ -291,7 +323,7 @@ public class MainActivity extends Activity {
     }
 
     /** Scheme, host and path only: Subsonic URLs carry the auth token in their query. */
-    private static String describe(Uri uri) {
+    static String describe(Uri uri) {
         if (uri.getScheme() == null) return String.valueOf(uri.getPath());
         return uri.getScheme() + "://" + (uri.getAuthority() != null ? uri.getAuthority() : "") + uri.getPath();
     }
