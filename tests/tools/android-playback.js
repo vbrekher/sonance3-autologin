@@ -635,6 +635,13 @@ async function a5(dir) {
     return true;
 }
 
+// For tests/tools/android-background.js (S4).
+module.exports = {
+    PROXY: PROXY, media: media, startProxy: startProxy, bootApp: bootApp, close: close, instrument: instrument,
+    state: state, fmt: fmt, playerLog: playerLog, windowFlags: windowFlags, audioPlayers: audioPlayers,
+    Checks: Checks, waitFor: waitFor, pid: pid
+};
+
 if (require.main === module) {
     var checks = { a1: a1, a3: a3, a4: a4, a5: a5, a6: a6, s5: s5, w4: w4 };
     var name = process.argv[2];
