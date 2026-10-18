@@ -2,14 +2,16 @@ import { test, expect, Page } from '@playwright/test';
 import * as path from 'path';
 import * as H from './helpers/sonance';
 
-// Android TV port (ticket-3.xx-androidtv §7.1), part 1 (S2): the shim's tizen.* parts, the
-// platform seam (S3), key injection (K1) and the bridge calls (S4), on the bundled build.
+// Android TV port (ticket-3.xx-androidtv §7.1), on the bundled build.
+// - Part 1 (S2): the shim's tizen.* parts, the platform seam (S3), key injection (K1) and the bridge
+//   calls (S4).
+// - Part 2 (S3): webapis.avplay over the bridge (A1-A4) and webapis.appcommon (S5).
 //
 // The Android host serves android/shim/webapis.js where Tizen serves webapis.js; here it is routed
 // to that path (the dev server 404s it). A fake window.SonanceNative, injected before any page
-// script, stands in for the host's bridge: it answers androidVersion() with "11" and records every
-// call. Without the fake the shim must do nothing (S1), so the browser and Tizen readings stay as
-// they are today.
+// script, stands in for the host's bridge: it answers androidVersion() with "11", stands in for
+// PlayerEngine, and records every call. Without the fake the shim must do nothing (S1), so the
+// browser and Tizen readings stay as they are today.
 
 const SHIM = path.resolve(__dirname, '..', 'android', 'shim', 'webapis.js');
 
@@ -23,20 +25,72 @@ async function routeShim(page: Page) {
 }
 
 // The host's bridge as the shim sees it: @JavascriptInterface methods on window.SonanceNative.
-async function fakeBridge(page: Page) {
-  await page.addInitScript(() => {
+// Part 2 adds PlayerEngine's methods and the screen saver; every call is recorded in __bridgeCalls.
+// Native events reach the page through SonanceShim.receive, as the host's evaluateJavascript sends
+// them. With `auto` (the default), the fake engine (window.__engine) answers as MediaPlayer does:
+// a prepare with "prepared" (20 s), a playing session with a tick every 200 ms, a seek with
+// "seeked", the screen saver with its callback. A stream whose song id is a key of __engine.fail
+// fails its prepare with that error instead. Without `auto`, the test sends every native event.
+async function fakeBridge(page: Page, opts: { auto?: boolean } = {}) {
+  await page.addInitScript((auto: boolean) => {
+    const w = window as any;
     const calls: any[] = [];
-    (window as any).__bridgeCalls = calls;
-    (window as any).SonanceNative = {
-      androidVersion() { calls.push(['androidVersion']); return '11'; },
-      exit() { calls.push(['exit']); }
+    w.__bridgeCalls = calls;
+    const engine = w.__engine = { auto, last: 0, duration: 20000, fail: {} as Record<string, string>, sessions: {} as any };
+    const receive = (msg: any) => w.SonanceShim.receive(msg);
+    const later = (msg: any) => setTimeout(() => receive(msg), 10);
+    const halt = (id: number) => {
+      const s = engine.sessions[id];
+      if (s && s.timer) { clearTimeout(s.timer); s.timer = null; }
     };
-  });
+    const tick = (id: number) => {
+      const s = engine.sessions[id];
+      s.timer = setTimeout(() => {
+        s.position += 200;
+        receive({ type: 'player', session: id, event: 'tick', position: s.position });
+        tick(id);
+      }, 200);
+    };
+    w.SonanceNative = {
+      androidVersion() { calls.push(['androidVersion']); return '11'; },
+      exit() { calls.push(['exit']); },
+      playerOpen(url: string) {
+        calls.push(['playerOpen', url]);
+        const id = ++engine.last;
+        engine.sessions[id] = { url, position: 0, timer: null };
+        return id;
+      },
+      playerPrepare(id: number) {
+        calls.push(['playerPrepare', id]);
+        if (!engine.auto) return;
+        const songId = new URL(engine.sessions[id].url, location.href).searchParams.get('id') || '';
+        if (engine.fail[songId]) later({ type: 'player', session: id, event: 'error', error: engine.fail[songId] });
+        else later({ type: 'player', session: id, event: 'prepared', duration: engine.duration });
+      },
+      playerPlay(id: number) {
+        calls.push(['playerPlay', id]);
+        halt(id);
+        if (engine.auto) tick(id);
+      },
+      playerPause(id: number) { calls.push(['playerPause', id]); halt(id); },
+      playerSeek(id: number, ms: number, seek: number) {
+        calls.push(['playerSeek', id, ms, seek]);
+        engine.sessions[id].position = ms;
+        if (engine.auto) later({ type: 'player', session: id, event: 'seeked', seek, position: ms });
+      },
+      playerStop(id: number) { calls.push(['playerStop', id]); halt(id); },
+      playerClose(id: number) { calls.push(['playerClose', id]); halt(id); },
+      setKeepScreenOn(keep: boolean, callback: number) {
+        calls.push(['setKeepScreenOn', keep, callback]);
+        if (engine.auto) later({ type: 'callback', id: callback });
+      }
+    };
+  }, opts.auto !== false);
 }
 
-async function boot(page: Page, opts: { bridge: boolean; jellyfin?: boolean }) {
+async function boot(page: Page, opts: { bridge: boolean; jellyfin?: boolean; auto?: boolean }) {
   const hits = await routeShim(page);
-  if (opts.bridge) await fakeBridge(page);
+  if (opts.bridge) await fakeBridge(page, { auto: opts.auto });
   if (opts.jellyfin) await H.bootJellyfin(page, { bundled: true });
   else await H.bootBundled(page);
   expect(hits.n).toBe(1);
@@ -240,5 +294,330 @@ test.describe('S1 no bridge, no shim', () => {
     });
     expect(defined).toEqual([]);
     expect(await page.evaluate(() => (window as any).Player.IS_TIZEN)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Part 2 (S3): webapis.avplay over the bridge (A1-A4) and webapis.appcommon (S5). The contract is
+// what js/player.js uses, as tests/avplay-stub.js models it; MediaPlayer is behind the fake engine.
+// ---------------------------------------------------------------------------------------------
+
+// The bridge calls the player and the screen saver made since call `from`, compactly: a stream by
+// its song id (and a transcode by its format and offset), a seek by its session and ms.
+const playerCalls = (page: Page, from: number) => page.evaluate((n) => (window as any).__bridgeCalls.slice(n)
+  .filter((c: any[]) => c[0] !== 'androidVersion' && c[0] !== 'exit')
+  .map((c: any[]) => {
+    if (c[0] === 'playerOpen') {
+      const q = new URL(c[1], location.href).searchParams;
+      return 'open ' + q.get('id') + (q.get('format') ? ' ' + q.get('format') : '') +
+        (Number(q.get('timeOffset')) ? ' @' + q.get('timeOffset') : '');
+    }
+    if (c[0] === 'playerSeek') return 'seek ' + c[1] + ' ' + c[2];
+    if (c[0] === 'setKeepScreenOn') return 'keepScreenOn ' + c[1];
+    return c[0].replace(/^player/, '').toLowerCase() + ' ' + c[1];
+  }), from);
+
+const bridgeCount = (page: Page): Promise<number> => page.evaluate(() => (window as any).__bridgeCalls.length);
+
+// Native events, as the host sends them (evaluateJavascript, then SonanceShim.receive).
+const native = (page: Page, msgs: any[]) =>
+  page.evaluate((m) => m.forEach((x: any) => (window as any).SonanceShim.receive(x)), msgs);
+
+async function recordToasts(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__toasts = [];
+    const orig = w.App.showToast;
+    w.App.showToast = function(msg: string) { w.__toasts.push(msg); return orig.apply(this, arguments as any); };
+  });
+}
+
+test.describe('A1 AVPlay on the bridge', () => {
+  test('with the bridge, Player.IS_TIZEN is true: webapis.avplay and appcommon exist before the bundles', async ({ page }) => {
+    await boot(page, { bridge: true });
+    expect(await page.evaluate(() => {
+      const w = window as any;
+      return { tizen: w.Player.IS_TIZEN, avplay: typeof w.webapis.avplay, appcommon: typeof w.webapis.appcommon };
+    })).toEqual({ tizen: true, avplay: 'object', appcommon: 'object' });
+    // Without the bridge: 'S1 no bridge, no shim' (IS_TIZEN false, no webapis).
+  });
+
+  test('the state machine: open, prepare, play, pause, stop and close, answered synchronously', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const n = await bridgeCount(page);
+    const r = await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay, out: string[] = [];
+      const st = (label: string) => out.push(label + ' ' + av.getState() + ' ' + av.getDuration());
+      st('start');
+      av.open('http://localhost/rest/stream.view?id=song-0'); st('open');
+      av.setDisplayRect(0, 0, 1, 1); st('setDisplayRect');
+      av.setListener({});
+      av.prepareAsync(() => st('ok'), () => st('err'));
+      st('prepareAsync');
+      w.SonanceShim.receive({ type: 'player', session: w.__engine.last, event: 'prepared', duration: 214000 });
+      av.seekTo(5000); st('seekTo');
+      av.play(); st('play');
+      av.pause(); st('pause');
+      av.play(); st('play');
+      av.stop(); st('stop');
+      av.close(); st('close');
+      return out;
+    });
+    expect(r).toEqual([
+      'start NONE 0', 'open IDLE 0', 'setDisplayRect IDLE 0', 'prepareAsync IDLE 0', 'ok READY 214000',
+      'seekTo READY 214000', 'play PLAYING 214000', 'pause PAUSED 214000', 'play PLAYING 214000',
+      'stop IDLE 214000', 'close NONE 0'
+    ]);
+    // setDisplayRect and setListener stay in the page; every other call reaches the engine.
+    expect(await playerCalls(page, n)).toEqual([
+      'open song-0', 'prepare 1', 'seek 1 5000', 'play 1', 'pause 1', 'play 1', 'stop 1', 'close 1'
+    ]);
+  });
+
+  test('a call in the wrong state throws InvalidStateError, as AVPlay does, and reaches nothing', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const n = await bridgeCount(page);
+    const r = await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay, out: string[] = [];
+      const tryIt = (label: string, f: () => void) => {
+        try { f(); out.push(label + ' ok ' + av.getState()); } catch (e) { out.push(label + ' ' + (e as any).name + ' ' + av.getState()); }
+      };
+      const noop = () => {};
+      ['play', 'pause', 'stop'].forEach((m) => tryIt(m, () => av[m]()));
+      tryIt('prepareAsync', () => av.prepareAsync(noop, noop));
+      tryIt('seekTo', () => av.seekTo(1000));
+      av.open('http://localhost/rest/stream.view?id=song-0');
+      tryIt('open', () => av.open('http://localhost/rest/stream.view?id=song-1'));
+      ['play', 'pause'].forEach((m) => tryIt(m, () => av[m]()));
+      tryIt('seekTo', () => av.seekTo(1000));
+      av.prepareAsync(noop, noop);
+      w.SonanceShim.receive({ type: 'player', session: w.__engine.last, event: 'prepared', duration: 20000 });
+      tryIt('prepareAsync', () => av.prepareAsync(noop, noop));
+      tryIt('pause', () => av.pause());
+      return out;
+    });
+    expect(r).toEqual([
+      'play InvalidStateError NONE', 'pause InvalidStateError NONE', 'stop InvalidStateError NONE',
+      'prepareAsync InvalidStateError NONE', 'seekTo InvalidStateError NONE',
+      'open InvalidStateError IDLE', 'play InvalidStateError IDLE', 'pause InvalidStateError IDLE',
+      'seekTo InvalidStateError IDLE',
+      'prepareAsync InvalidStateError READY', 'pause InvalidStateError READY'
+    ]);
+    expect(await playerCalls(page, n)).toEqual(['open song-0', 'prepare 1']);
+  });
+
+  test('the session guard: an event from an earlier session is dropped', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const r = await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay, out: string[] = [];
+      const send = (session: number, event: string, extra?: any) =>
+        w.SonanceShim.receive(Object.assign({ type: 'player', session, event }, extra));
+      av.open('http://localhost/rest/stream.view?id=song-0');
+      const first = w.__engine.last;
+      av.close();
+      av.open('http://localhost/rest/stream.view?id=song-1');
+      const second = w.__engine.last;
+      av.setListener({
+        oncurrentplaytime: (ms: number) => out.push('tick ' + ms),
+        onstreamcompleted: () => out.push('completed'),
+        onbufferingstart: () => out.push('bufferingstart'),
+        onerror: (e: any) => out.push('onerror ' + e)
+      });
+      av.prepareAsync(() => out.push('ok'), () => out.push('err'));
+      send(first, 'prepared', { duration: 1000 });
+      send(first, 'error', { error: 'PLAYER_ERROR_CONNECTION_FAILED' });
+      out.push(av.getState());
+      send(second, 'prepared', { duration: 2000 });
+      av.play();
+      send(first, 'tick', { position: 600 });
+      send(first, 'bufferingstart');
+      send(first, 'completed');
+      send(second, 'tick', { position: 200 });
+      return { out, first, second };
+    });
+    expect(r.second).toBeGreaterThan(r.first);
+    expect(r.out).toEqual(['IDLE', 'ok', 'tick 200']);
+  });
+});
+
+test.describe('A2 events', () => {
+  test('oncurrentplaytime fires on each native tick (every 200 ms while playing), and once after each seek', async ({ page }) => {
+    await boot(page, { bridge: true });
+    await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay;
+      w.__ticks = [];
+      av.open('http://localhost/rest/stream.view?id=song-0');
+      av.setListener({ oncurrentplaytime: (ms: number) => w.__ticks.push(ms) });
+      av.prepareAsync(() => av.play(), () => {});
+    });
+    await page.waitForTimeout(1100);
+    const ticks: number[] = await page.evaluate(() => {
+      (window as any).webapis.avplay.pause();
+      return (window as any).__ticks.slice();
+    });
+    expect(ticks.length).toBeGreaterThanOrEqual(4);
+    expect(ticks).toEqual(ticks.map((_, i) => 200 * (i + 1)));
+    // A seek calls ok when the native seek completes, then reports the position. The engine is
+    // given whole ms.
+    const n = await bridgeCount(page);
+    const seek = await page.evaluate(() => new Promise((resolve) => {
+      const w = window as any, out: string[] = [];
+      w.__ticks.length = 0;
+      w.webapis.avplay.seekTo(7500.6, () => out.push('ok after ' + w.__ticks.length + ' ticks'), () => out.push('err'));
+      setTimeout(() => resolve({ out, ticks: w.__ticks.slice() }), 300);
+    }));
+    expect(seek).toEqual({ out: ['ok after 0 ticks'], ticks: [7501] });
+    expect(await playerCalls(page, n)).toEqual(['seek 1 7501']);
+  });
+
+  test('buffering start and end and the end of the stream reach the listener', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const r = await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay, out: string[] = [];
+      av.open('http://localhost/rest/stream.view?id=song-0');
+      av.setListener({
+        onbufferingstart: () => out.push('bufferingstart'),
+        onbufferingcomplete: () => out.push('bufferingcomplete'),
+        onstreamcompleted: () => out.push('completed'),
+        onevent: (t: string) => out.push('event ' + t)
+      });
+      av.prepareAsync(() => av.play(), () => out.push('err'));
+      const id = w.__engine.last;
+      ['bufferingstart', 'bufferingcomplete'].forEach((e) => w.SonanceShim.receive({ type: 'player', session: id, event: e }));
+      w.SonanceShim.receive({ type: 'player', session: id, event: 'prepared', duration: 20000 });
+      ['bufferingstart', 'bufferingcomplete', 'completed'].forEach((e) => w.SonanceShim.receive({ type: 'player', session: id, event: e }));
+      return out;
+    });
+    expect(r).toEqual(['bufferingstart', 'bufferingcomplete', 'bufferingstart', 'bufferingcomplete', 'completed']);
+  });
+});
+
+test.describe('A3 errors', () => {
+  test('a failed prepare calls its error callback (NotSupported for unsupported media); a later error calls onerror, and nothing follows', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const r = await page.evaluate(() => {
+      const w = window as any, av = w.webapis.avplay, out: string[] = [];
+      const listener = {
+        onerror: (e: any) => out.push('onerror ' + e),
+        onstreamcompleted: () => out.push('completed'),
+        oncurrentplaytime: (ms: number) => out.push('tick ' + ms)
+      };
+      // player.js _avplayCause: what the app makes of the error.
+      const cause = (err: any) => /NOT_SUPPORTED|NotSupported/.test((err && typeof err === 'object')
+        ? String(err.name || err.message || '') : String(err)) ? 'format' : 'load';
+      const failedLoad = (error: string) => {
+        if (av.getState() !== 'NONE') av.close();
+        av.open('http://localhost/rest/stream.view?id=song-0');
+        av.setListener(listener);
+        av.prepareAsync(() => out.push('ok'), (e: any) => out.push('err ' + e.name + ' ' + e.message + ' ' + cause(e)));
+        w.SonanceShim.receive({ type: 'player', session: w.__engine.last, event: 'error', error });
+        out.push(av.getState());
+      };
+      failedLoad('PLAYER_ERROR_NOT_SUPPORTED_FILE');
+      failedLoad('PLAYER_ERROR_CONNECTION_FAILED');
+      failedLoad('PLAYER_ERROR_GENERIC');
+      av.close();
+      av.open('http://localhost/rest/stream.view?id=song-1');
+      av.setListener(listener);
+      av.prepareAsync(() => av.play(), () => out.push('err'));
+      const id = w.__engine.last;
+      const send = (event: string, extra?: any) => w.SonanceShim.receive(Object.assign({ type: 'player', session: id, event }, extra));
+      send('prepared', { duration: 20000 });
+      send('tick', { position: 200 });
+      send('error', { error: 'PLAYER_ERROR_CONNECTION_FAILED' });
+      send('completed');
+      send('tick', { position: 400 });
+      return out;
+    });
+    expect(r).toEqual([
+      'err NotSupportedError PLAYER_ERROR_NOT_SUPPORTED_FILE format', 'IDLE',
+      'err NetworkError PLAYER_ERROR_CONNECTION_FAILED load', 'IDLE',
+      'err UnknownError PLAYER_ERROR_GENERIC load', 'IDLE',
+      'tick 200', 'onerror PLAYER_ERROR_CONNECTION_FAILED'
+    ]);
+  });
+
+  test('in the app, an unsupported track shows "format not supported", a failed one "couldn\'t be loaded", and the next one plays', async ({ page }) => {
+    await boot(page, { bridge: true });
+    await recordToasts(page);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__engine.fail = { 'song-0': 'PLAYER_ERROR_NOT_SUPPORTED_FILE', 'song-1': 'PLAYER_ERROR_CONNECTION_FAILED' };
+      w.Player.setQueue(w.__MOCK__.songs.slice(0, 3), 0);
+    });
+    await page.waitForFunction(() => {
+      const s = (window as any).Player.getState();
+      return s.currentTrack && s.currentTrack.id === 'song-2' && s.isPlaying;
+    });
+    expect(await page.evaluate(() => (window as any).__toasts.slice())).toEqual([
+      'Track 01 — format not supported', 'Track 02 — couldn\'t be loaded'
+    ]);
+  });
+});
+
+test.describe('S5 screen saver', () => {
+  test('setScreenSaver(OFF / ON) asks the host to keep the screen on or not, then calls ok', async ({ page }) => {
+    await boot(page, { bridge: true, auto: false });
+    const r = await page.evaluate(() => {
+      const w = window as any, ac = w.webapis.appcommon, out: string[] = [];
+      const n = w.__bridgeCalls.length;
+      ac.setScreenSaver(ac.AppCommonScreenSaverState.SCREEN_SAVER_OFF, () => out.push('ok off'), () => out.push('err off'));
+      ac.setScreenSaver(ac.AppCommonScreenSaverState.SCREEN_SAVER_ON, () => out.push('ok on'), () => out.push('err on'));
+      const calls = w.__bridgeCalls.slice(n);
+      const before = out.slice();
+      // The host answers once the window's flag is set.
+      calls.forEach((c: any[]) => w.SonanceShim.receive({ type: 'callback', id: c[2] }));
+      return { states: ac.AppCommonScreenSaverState, calls: calls.map((c: any[]) => c[0] + ' ' + c[1]), before, after: out };
+    });
+    expect(r.states).toEqual({ SCREEN_SAVER_OFF: 0, SCREEN_SAVER_ON: 1 });
+    expect(r.calls).toEqual(['setKeepScreenOn true', 'setKeepScreenOn false']);
+    expect(r.before).toEqual([]);
+    expect(r.after).toEqual(['ok off', 'ok on']);
+  });
+});
+
+test.describe('App playback on the bridge', () => {
+  test('a track plays through the real Player: play, pause, a seek, then the end of the stream moves to the next', async ({ page }) => {
+    await boot(page, { bridge: true });
+    const n = await bridgeCount(page);
+    const state = () => page.evaluate(() => {
+      const s = (window as any).Player.getState();
+      return { id: s.currentTrack && s.currentTrack.id, playing: s.isPlaying, at: s.currentTime, duration: s.duration };
+    });
+    await H.startTrack(page, 3);
+    await playing(page, true);
+    await expect.poll(async () => (await state()).at).toBeGreaterThanOrEqual(0.4);
+    expect((await state()).duration).toBe(20);
+    await page.evaluate(() => (window as any).Player.pause());
+    await playing(page, false);
+    await page.evaluate(() => (window as any).Player.play());
+    await playing(page, true);
+    await page.evaluate(() => (window as any).Player.seekTo(10));
+    await expect.poll(async () => (await state()).at).toBeGreaterThanOrEqual(10.2);
+    const first = await page.evaluate(() => (window as any).__engine.last);
+    await native(page, [{ type: 'player', session: first, event: 'completed' }]);
+    await expect.poll(state).toMatchObject({ id: 'song-1', playing: true });
+    expect(await playerCalls(page, n)).toEqual([
+      'open song-0', 'prepare 1', 'play 1', 'keepScreenOn true',
+      'pause 1', 'keepScreenOn false',
+      'play 1', 'keepScreenOn true',
+      'seek 1 10000',
+      'stop 1', 'close 1', 'open song-1', 'prepare 2', 'play 2', 'keepScreenOn true'
+    ]);
+  });
+
+  test('A4 a transcode streams as MP3 and seeks by reloading with timeOffset, never seekTo', async ({ page }) => {
+    await boot(page, { bridge: true });
+    const n = await bridgeCount(page);
+    await page.evaluate(() => (window as any).Player.setQueue([(window as any).__MOCK__.songs[4]], 0));
+    await playing(page, true);
+    await page.evaluate(() => (window as any).Player.seekTo(8));
+    await expect.poll(() => page.evaluate(() => (window as any).__engine.last)).toBe(2);
+    await playing(page, true);
+    await expect.poll(() => page.evaluate(() => (window as any).Player.getState().currentTime)).toBeGreaterThanOrEqual(8.2);
+    expect(await playerCalls(page, n)).toEqual([
+      'open song-4 mp3', 'prepare 1', 'play 1', 'keepScreenOn true',
+      'stop 1', 'close 1', 'open song-4 mp3 @8', 'prepare 2', 'play 2', 'keepScreenOn true'
+    ]);
   });
 });
