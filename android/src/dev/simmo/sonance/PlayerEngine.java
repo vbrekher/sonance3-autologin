@@ -78,7 +78,9 @@ final class PlayerEngine {
 
     // The player thread only.
     private Session current;
-    // B2: a transient loss paused the page, so the regain resumes it; a duck lowered the volume.
+    // B2: the engine holds the focus (a duck included); a transient loss paused the page, so the
+    // regain resumes it; a duck lowered the volume.
+    private boolean hasFocus;
     private boolean transientLoss;
     private boolean ducked;
 
@@ -147,7 +149,7 @@ final class PlayerEngine {
         });
     }
 
-    /** B2: each play requests the focus first; refused, the stream stays unstarted (D229). */
+    /** B2: a play needs the focus (D231); refused, the stream stays unstarted (D229). */
     void play(int id) {
         command(id, "play", true, s -> {
             if (!requestFocus()) return;
@@ -155,6 +157,8 @@ final class PlayerEngine {
             s.started = true;
             s.playing = true;
             startTicks();
+            // B3's gaps run from one stream's "completed" to the next one's "started".
+            Log.i(MainActivity.TAG, "[Sonance] player " + id + ": started");
         });
     }
 
@@ -163,6 +167,7 @@ final class PlayerEngine {
             stopTicks(s);
             // MediaPlayer's pause() in Prepared is an error (-38): a play refused the focus (D229).
             if (s.started) s.player.pause();
+            Log.i(MainActivity.TAG, "[Sonance] player " + id + ": paused");
         });
     }
 
@@ -289,7 +294,7 @@ final class PlayerEngine {
         });
         load(s);
         Log.i(MainActivity.TAG, "[Sonance] player " + id + ": open "
-                + MainActivity.describe(Uri.parse(url)));
+                + MainActivity.describe(Uri.parse(url)) + (ducked ? " (ducked, volume " + DUCK_VOLUME + ")" : ""));
     }
 
     /** The stream, its attributes and the volume (a duck's, B2), on a new or reset player. */
@@ -387,13 +392,17 @@ final class PlayerEngine {
     // --- B2: audio focus, on the player thread. ---
 
     /**
-     * Requests the focus for a play, which takes it from any other app (the user chose to play).
-     * D229: refused (a call in progress), the page is told to pause, as for a loss, and the stream
-     * stays unstarted.
+     * The focus for a play. D231: only when the engine does not hold it, or holds it after a
+     * transient loss (then the play is the user's, and takes it from the other app). Held, and a
+     * duck is held, a play keeps it as it is: the next track's start while ducked must not take
+     * the focus back from the app that ducked Sonance. D229: refused (a call in progress), the page
+     * is told to pause, as for a loss, and the stream stays unstarted.
      */
     private boolean requestFocus() {
+        if (hasFocus && !transientLoss) return true;
         int result = audio.requestAudioFocus(focusRequest);
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            hasFocus = true;
             transientLoss = false;
             setDucked(false);
             return true;
@@ -411,6 +420,7 @@ final class PlayerEngine {
     private void onFocusChange(int change) {
         switch (change) {
             case AudioManager.AUDIOFOCUS_LOSS:
+                hasFocus = false;
                 transientLoss = false;
                 setDucked(false);
                 Log.i(MainActivity.TAG, "[Sonance] focus: lost: pausing");
@@ -448,6 +458,7 @@ final class PlayerEngine {
 
     private void abandonFocus() {
         audio.abandonAudioFocusRequest(focusRequest);
+        hasFocus = false;
         transientLoss = false;
         setDucked(false);
     }

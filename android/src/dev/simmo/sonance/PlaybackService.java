@@ -90,6 +90,9 @@ public final class PlaybackService extends Service {
                 .setOngoing(true)
                 .setShowWhen(false);
         if (!title.isEmpty()) b.setContentText(title);
+        // D230: on Android 13+ without POST_NOTIFICATIONS the system does not post it, so the log
+        // is where the emulator shows its text.
+        Log.i(MainActivity.TAG, "[Sonance] service: notification \"Sonance\"" + (title.isEmpty() ? "" : ", \"" + title + "\""));
         return b.build();
     }
 }
