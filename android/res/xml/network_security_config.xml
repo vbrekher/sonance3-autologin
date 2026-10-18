@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The user's server is usually plain http:// on the LAN (login.js accepts both), so cleartext
+     is allowed everywhere; https trusts the system CAs only (P2, W1). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

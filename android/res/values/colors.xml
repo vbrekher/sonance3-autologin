@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The bg-primary token (docs/UI-MOCKUP-REFERENCE.md "Colour tokens"): the window background, so
+         nothing white shows before the web splash paints (W6). -->
+    <color name="bg_primary">#FF0A0A0C</color>
+</resources>

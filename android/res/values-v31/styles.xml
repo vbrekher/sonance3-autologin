@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ system splash (W6): the app background and no icon, so it reads as the first
+         frame of the web splash (whose logo starts at scale 0). -->
+    <style name="Theme.Sonance" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/bg_primary</item>
+        <item name="android:windowSplashScreenBackground">@color/bg_primary</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+    </style>
+</resources>

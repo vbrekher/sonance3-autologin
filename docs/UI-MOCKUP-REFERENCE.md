@@ -1147,6 +1147,21 @@ whose hold most likely arrives as release/press pairs:
   diagnostic package (`Sonance3-Oblong-Diag.wgt`, D161) was not needed and
   is no longer built.
 
+## Android TV launcher (ticket-3.xx-androidtv P3, W6)
+
+No new artwork, colour or text: both images are the existing files, scaled
+with `sips` (built into macOS) into `android/res/`.
+- **Banner** (`android:banner`, the launcher row): `icon-oblong-1920.png`
+  scaled to 320×180, `drawable-xhdpi/banner.png`.
+- **Icon** (`android:icon`): `icon.png` scaled to the launcher mipmap sizes,
+  `mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` at 48, 72, 96,
+  144 and 192 px.
+- **First frame:** the window background, and the Android 12+ system splash
+  background, are `--bg-primary` (`#0a0a0c`), and the system splash has no
+  icon, so it reads as the first frame of the web splash (whose logo starts
+  at scale 0). The WebView's own background is the same colour, so nothing
+  white shows before the page paints.
+
 ## v3.12 surfaces (ticket-3.12 R2–R6) — written before the CSS
 
 No new tokens: each surface reuses a component above.
