@@ -323,7 +323,9 @@ var SettingsScreen = (function() {
 
         aboutBox.appendChild(el('div', { className: 'settings-about-row' }, 'V3.14'));
 
-        var platformValue = Player.IS_TIZEN ? 'Tizen 5.0' : 'Browser';
+        // ticket-3.xx-androidtv S3: on Android the shim names the platform ("Android TV 11").
+        var platformValue = typeof SonancePlatform !== 'undefined' ? SonancePlatform.platformLabel
+            : Player.IS_TIZEN ? 'Tizen 5.0' : 'Browser';
         aboutBox.appendChild(el('div', { className: 'settings-about-row' }, 'Platform: ' + platformValue));
 
         rightCol.appendChild(aboutBox);

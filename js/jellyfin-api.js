@@ -114,7 +114,10 @@ var JellyfinAPI = (function() {
         return parts.length ? '?' + parts.join('&') : '';
     }
 
+    // ticket-3.xx-androidtv S3: the Android host names itself ("Android TV"). It is checked first
+    // because the Android shim defines `tizen` too.
     function _deviceName() {
+        if (typeof SonancePlatform !== 'undefined') return SonancePlatform.deviceName;
         return typeof tizen !== 'undefined' ? 'Samsung TV' : 'Browser';
     }
 
