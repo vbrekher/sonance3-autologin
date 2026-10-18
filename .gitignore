@@ -50,3 +50,10 @@ node_modules/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# --- Android TV (ticket-3.xx-androidtv P4) ------------------------------------
+# build-android.sh's staging, intermediates, the debug keystore and the debug APK.
+# Keystores anywhere: the release keystore is the user's and never enters the repository.
+android/build/
+*.jks
+*.keystore
