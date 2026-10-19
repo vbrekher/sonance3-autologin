@@ -6,7 +6,7 @@
 
 Sonance turns your Samsung smart TV into a full-featured music player. Browse your library, play albums, search your collection, and enjoy synced lyrics — all from your sofa with just the TV remote.
 
-This is Version 3 of Sonance — a UI rewrite with a completely new hardware-accelerated interface and multiple library support. **Version 3.11** made it readable and responsive from the sofa: a larger, adjustable interface, a clear focus highlight, faster navigation, and a much richer Now Playing screen. See [CHANGELOG-3.9 to 3.11.md](CHANGELOG-3.9%20to%203.11.md) for what changed. **Version 3.12** brings in the community's contributions — Opus playback, more ways to sort, fuller Home rows and popular songs on artist pages: see [CHANGELOG-3.12.md](CHANGELOG-3.12.md) and [Contributors](#contributors). **Version 3.13** adds Jellyfin servers, accounts without a password included: see [CHANGELOG-3.13.md](CHANGELOG-3.13.md) and [Jellyfin](#jellyfin). **Version 3.14** wraps long lyric lines at whole words at every interface size, and makes holding OK open the options menu on the Samsung silver remote: see [CHANGELOG-3.14.md](CHANGELOG-3.14.md).
+This is Version 3 of Sonance — a UI rewrite with a completely new hardware-accelerated interface and multiple library support. **Version 3.11** made it readable and responsive from the sofa: a larger, adjustable interface, a clear focus highlight, faster navigation, and a much richer Now Playing screen. See [CHANGELOG-3.9 to 3.11.md](CHANGELOG-3.9%20to%203.11.md) for what changed. **Version 3.12** brings in the community's contributions — Opus playback, more ways to sort, fuller Home rows and popular songs on artist pages: see [CHANGELOG-3.12.md](CHANGELOG-3.12.md) and [Contributors](#contributors). **Version 3.13** adds Jellyfin servers, accounts without a password included: see [CHANGELOG-3.13.md](CHANGELOG-3.13.md) and [Jellyfin](#jellyfin). **Version 3.14** wraps long lyric lines at whole words at every interface size, and makes holding OK open the options menu on the Samsung silver remote: see [CHANGELOG-3.14.md](CHANGELOG-3.14.md). **Version 3.15** brings the same app to Android TV and Google TV: see [CHANGELOG-3.15.md](CHANGELOG-3.15.md) and [Android TV](#android-tv).
 
 ## Features
 
@@ -115,6 +115,32 @@ The build minifies the JavaScript into two bundles (`js/sonance-core.min.js`, `j
 
 If you are using Nix, you can make use of the provided `shell.nix` with `nix-shell` to have a shell environment with the needed dependencies.
 
+## Android TV
+
+Since 3.15, Sonance also runs on Android TV and Google TV, as an APK: the same screens, settings and remote behaviour as on the Samsung TV, in the system WebView inside a small native host. Music keeps playing when you press Home or open another app, and pauses when another app plays sound.
+
+### Requirements
+
+- An **Android TV or Google TV** device on **Android 8.0 or later**: a TV, a streaming box such as the NVIDIA SHIELD, or a dongle such as the Chromecast with Google TV. TV only: there is no phone or tablet version.
+- **Navidrome** or **Jellyfin 12.x** on your local network, as for the Samsung version.
+
+### Install
+
+1. Download `Sonance3-AndroidTV.apk` from the [latest release](../../releases/latest).
+2. Install it in one of three ways, each described in [docs/DEPLOYMENT-ANDROID-TV.md](docs/DEPLOYMENT-ANDROID-TV.md):
+   - from a computer with `adb`: turn on developer options on the TV, then `adb connect <tv-address>:5555` and `adb install -r Sonance3-AndroidTV.apk`;
+   - on the TV, with the **Downloader** app;
+   - from a phone, with **Send Files to TV**.
+3. To update, install the new APK over the old one. Your sign-in and settings are kept.
+
+To build it yourself, with the Android SDK and a JDK (no Gradle): `./build.sh`, then `./build-android.sh --debug`. A release build is signed with your own keystore: see the guide.
+
+### First run
+
+Open **Sonance** from the Apps row and sign in as in [Setup](#setup), typing with the TV keyboard. Its **Next** key moves to the next field, and on the password field its action key signs in. The remote works as on the Samsung TV: arrows, OK, Back, and Play/Pause, Rewind and Fast-forward where the remote has them; hold OK on a song for the options menu.
+
+A few things differ from the Samsung version: the text is in the system font, because SamsungOne is Samsung's own; the album's Yellow and Blue actions need a remote with colour keys; and there is no now-playing card on the Google TV home screen. The guide lists them all under "Known differences".
+
 ## Setup
 
 1. Launch Sonance on your TV
@@ -197,7 +223,7 @@ The lyrics panel shows the current line highlighted in bold, with past and upcom
 - **Subsonic REST API** with OpenSubsonic extensions — compatible with Navidrome, Subsonic, Airsonic, and others
 - **Jellyfin API** (12.x) — through a translation adapter (`js/jellyfin-api.js`), so both servers share every screen
 - **Tizen Web App** — packaged as a `.wgt` widget
-- **Playwright** — an end-to-end test suite (386 tests, keyboard-only) against a mock server that can answer as Navidrome or as Jellyfin
+- **Playwright** — an end-to-end test suite (417 tests, keyboard-only) against a mock server that can answer as Navidrome or as Jellyfin
 
 The app package is ~100 KB and loads instantly. Zero external dependencies at runtime.
 
@@ -237,14 +263,16 @@ sonance3/
 ├── CHANGELOG-3.12.md          # What changed in 3.12
 ├── CHANGELOG-3.13.md          # What changed in 3.13 (Jellyfin)
 ├── CHANGELOG-3.14.md          # What changed in 3.14 (lyrics wrap, hold OK)
+├── CHANGELOG-3.15.md          # What changed in 3.15 (Android TV)
 ├── LICENSE                    # GNU GPL v3
 ├── index.html                 # App entry point (launch splash inline)
-├── config.xml                 # Tizen widget configuration (version 3.14.0)
+├── config.xml                 # Tizen widget configuration (version 3.15.0)
 ├── icon.png                   # Square launcher icon (256 × 256)
 ├── icon-oblong-1920.png       # Wide home-row icon (1920 × 1080)
 ├── build.sh                   # Build script → Sonance3.wgt and Sonance3-Oblong.wgt
 ├── Sonance3.wgt               # Built package, square icon
 ├── Sonance3-Oblong.wgt        # Built package, wide home-row tile
+├── build-android.sh           # Android TV build (Android SDK tools, no Gradle) → the APK
 ├── serve.sh                   # Simple dev server (python3, port 8080)
 ├── package.json               # Test tooling only (Playwright)
 ├── playwright.config.ts       # Test configuration
@@ -276,6 +304,7 @@ sonance3/
 │       ├── playlists.js
 │       ├── settings.js
 │       └── login.js
+├── android/                   # Android TV host: manifest, resources, Java (src/), the Tizen API shim (shim/)
 ├── e2e/                       # Playwright end-to-end tests
 ├── tests/                     # Dev server, mock server, measurement tools
 ├── docs/                      # Architecture, design spec, testing, deployment, reports

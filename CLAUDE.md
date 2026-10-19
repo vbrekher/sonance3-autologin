@@ -142,6 +142,11 @@ sonance/
 ├── config.xml              # Tizen widget manifest
 ├── icon.png                # App icon (256×256)
 ├── index.html              # Single HTML entry point
+├── android/                # Android TV host (v3.15); built by build-android.sh
+│   ├── AndroidManifest.xml
+│   ├── res/                # Launcher banner and icons, theme, network security config
+│   ├── shim/webapis.js     # The Tizen API shim, served at $WEBAPIS/webapis/webapis.js
+│   └── src/dev/simmo/sonance/   # MainActivity, NativeBridge, PlayerEngine, PlaybackService
 ├── css/
 │   └── styles.css          # All styles
 ├── js/
@@ -183,6 +188,13 @@ sonance/
 - `.wgt` is a renamed `.zip` containing all app files + `config.xml`.
 - Build script: `build.sh` that zips the app into `Sonance.wgt`.
 - Deploy via Jellyfin2Samsung (sideload the `.wgt` to TV in developer mode).
+
+### Android TV (v3.15)
+- **The host.** `android/` is a Java wrapper, on Android framework APIs only (no androidx, Media3/ExoPlayer, Leanback, Kotlin, Gradle or any other library), that runs the `.wgt`'s web payload, byte for byte, in the system WebView at a 1920×1080 CSS viewport (`setInitialScale`; never CSS `zoom`). `MainActivity` (the WebView, keys, lifecycle, renderer recovery), `NativeBridge` (`window.SonanceNative`), `PlayerEngine` (MediaPlayer on its own thread, and the audio focus) and `PlaybackService` (the `mediaPlayback` foreground service that keeps music playing in the background). The package id `dev.simmo.sonance` is permanent. Spec: `tickets/ticket-3.xx-androidtv.md`; design: `docs/ARCHITECTURE.md` §5a; device checks: `tests/tools/android-*.js` on the SDK's Google TV emulator (AVD `sonance-tv`).
+- **The shim.** `android/shim/webapis.js` is served at `$WEBAPIS/webapis/webapis.js`, before the bundles, and does nothing without the bridge. It defines `webapis.avplay` (over `PlayerEngine`), `webapis.appcommon`, `tizen.*`, `SonancePlatform` and `SonanceShim.receive` (the one entry point for native calls), so `Player.IS_TIZEN` is true and the app runs its AVPlay path, transcode rules included (D173–D176). The Tizen 5.0 rules above apply to it. The only shared-code seam: `SonancePlatform` names the platform in Settings → About and in Jellyfin's `Device=` ("Android TV").
+- **Keys (K1).** Native code translates the remote: the D-pad and OK pass through (37–40, 13); BACK becomes 10009, the media keys 10252, 10253, 10412 and 10417 (and 415, 19, 10232, 10233), and the colour keys 403–406, injected as synthetic key events; TV-only keys are swallowed (D221); Home, volume and power go to the system. `focus.js` and the hold-OK timing (D207, D211) never change for Android: the host adapts to them.
+- **The build.** `./build.sh`, then `./build-android.sh --debug` (`android/build/sonance-debug.apk`) or `--release` (`Sonance3-AndroidTV.apk`, signed with the user's keystore from `SONANCE_KEYSTORE`, `SONANCE_KEYSTORE_PASS`, `SONANCE_KEY_ALIAS` and `SONANCE_KEY_PASS`; a session never creates, reads or commits a keystore). The build fails if the staged payload differs from `Sonance3.wgt`, if the dex holds a class outside `dev.simmo.sonance`, or if the badging lacks the leanback launcher, the banner, minSdk 26 or targetSdk 35. versionName is `config.xml`'s version, and versionCode is major×10000 + minor×100 + patch. Never edit anything under `android/build/`. Deployment: `docs/DEPLOYMENT-ANDROID-TV.md`.
+- **targetSdk 35, pinned (G9).** At 36, Android 16 stops delivering `KEYCODE_BACK` and `onBackPressed`, and Back is the app's own navigation; 37 adds a local-network runtime permission and stricter background audio. The APK is sideloaded, so no store deadline forces a raise. Raising it is ticket §8 Q4, not routine.
 
 ### Workflow Rules
 - **One ticket per Claude Code session.** Do not combine phases.

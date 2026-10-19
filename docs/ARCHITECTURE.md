@@ -337,6 +337,97 @@ Sonance.wgt (ZIP archive)
 3. Deploy via Jellyfin2Samsung: select custom `.wgt`, point to TV IP
 4. App appears in Apps → Downloaded on TV
 
+## 5a. Android TV host (v3.15)
+
+Since 3.15 the same web app also ships as an Android TV APK (`tickets/ticket-3.xx-androidtv.md`,
+decisions D216–D235 in its §9). The system WebView hosts it, inside a small native wrapper in Java
+that uses Android framework APIs only: no androidx, Media3/ExoPlayer, Leanback or Kotlin.
+
+```
+Android TV device
+└── dev.simmo.sonance (APK)
+    ├── MainActivity (Java)     full-screen WebView, key translation (K1), lifecycle (W5), renderer recovery (W4)
+    │     └── WebView  file:///android_asset/www/index.html   ← the .wgt's web payload, byte for byte
+    │           ├── $WEBAPIS/webapis/webapis.js  ← android/shim/webapis.js: window.webapis + window.tizen
+    │           └── js/sonance-*.min.js          ← unchanged; runs its Tizen (AVPlay) code path
+    ├── NativeBridge (@JavascriptInterface)       the shim's only door into native code
+    ├── PlayerEngine (Java)     android.media.MediaPlayer on its own thread; events → evaluateJavascript
+    └── PlaybackService (Java)  mediaPlayback foreground service (B1); PlayerEngine holds the audio focus (B2)
+```
+
+**Why this shape:**
+- **The web payload is the `.wgt`'s.** `build-android.sh` takes it from `Sonance3.wgt` (minus
+  `config.xml` and `icon.png`) and fails if a staged file differs, so the two platforms cannot drift.
+- **Android runs the Tizen code path.** The shim defines `webapis.avplay` before `player.js` loads,
+  so `Player.IS_TIZEN` is true and the AVPlay branch runs as on the TV: the production path, with
+  D173–D176's transcode rules and the load-generation guards. The HTML5 branch stays the
+  browser-development path.
+- **Keys arrive as on Tizen.** `MainActivity` translates the remote's keys into Tizen's codes
+  (BACK → 10009, MEDIA_PLAY_PAUSE → 10252, the colour keys → 403–406, …), so `focus.js` is
+  untouched (§3.4).
+- **One shared-code seam.** `SonancePlatform` (set by the shim) names the platform in Settings →
+  About and in Jellyfin's `Device=` header ("Android TV"); without it both read as before.
+
+**Rejected:**
+- a native UI (Leanback or Compose for TV): both are libraries, and the UI would be redrawn by
+  hand, so it could not stay identical;
+- the HTML5 `<audio>` path inside the WebView: it differs from the TV's path and has no
+  foreground-service integration;
+- an intercepted `https` origin (the `WebViewAssetLoader` pattern): every request to an `http://`
+  server would become mixed content;
+- Gradle: the user's decision; `build-android.sh` calls aapt2, javac, d8, zipalign and apksigner
+  directly.
+
+**The bridge** (`window.SonanceNative`, `NativeBridge.java`). Its methods run on a binder thread
+and post their work; none blocks the UI thread.
+
+| Method | What it does |
+|---|---|
+| `androidVersion()` | The Android release ("14"), for `SonancePlatform.platformLabel` |
+| `exit()` | Stops the player and the service, then `finishAndRemoveTask()` (S4) |
+| `playerOpen(url)` | Opens a new player session on `PlayerEngine`; returns its id |
+| `playerPrepare(session)`, `playerPlay(session)`, `playerPause(session)`, `playerStop(session)`, `playerClose(session)` | AVPlay's calls, on that session. `playerPlay` also asks for the audio focus and starts the service (B1, B2) |
+| `playerSeek(session, ms, seekId)` | A `SEEK_CLOSEST` seek; `seekId` matches its `seeked` event |
+| `setKeepScreenOn(keep, callbackId)` | `FLAG_KEEP_SCREEN_ON` for AVPlay's screen-saver call (S5); answers with a callback |
+| `nowPlaying(title)` | The current track's title, for the service's notification |
+
+**Native to page.** Every message goes through `MainActivity.toPage()` on the UI thread, as
+`SonanceShim.receive(msg)` (guarded by the page's own `window.SonanceShim`, D220):
+
+| Message | Meaning |
+|---|---|
+| `{type:'key', action, keyCode, key, repeat}` | A translated key, injected as a synthetic `keydown` or `keyup` on the focused element; a held key repeats as further keydowns |
+| `{type:'player', session, event}` | `prepared` (with `duration`), `tick` (with `position`, every 200 ms while playing), `seeked` (with `seek`, `position`), `completed`, `bufferingstart`, `bufferingcomplete`, `error` (with `error`, an AVPlayError value) |
+| `{type:'callback', id}` | A bridge call has finished (`setKeepScreenOn`) |
+| `{type:'focus', action:'pause'\|'resume'}` | Audio focus: another app took it (pause through `Player.pause()`), or gave a transient loss back (resume only what was paused, B2) |
+
+The shim drops player events from any session but the current one, and answers `getState` and
+`getDuration` from its own state. Its AVPlay states and errors follow Samsung's AVPlay reference
+(D225).
+
+**Host behaviour:**
+- **Viewport (W2).** `setUseWideViewPort`, `setLoadWithOverviewMode` and
+  `setInitialScale(round(100 × screen width ÷ 1920))`, with `setTextZoom(100)`: the page is
+  1920 × 1080 CSS px at any output, as on the Q90R. Never CSS `zoom` (D49).
+- **Keys (K1).** Four groups: pass through (the D-pad and OK, which WebView already sends as 37–40
+  and 13), translate (BACK, the media keys, the colour keys), swallow (channel, page, info, guide,
+  menu, captions and other TV-only keys, D221) and system (Home, volume, power, search…).
+- **Lifecycle (W4, W5).** Leaving Sonance makes the page hidden, so the queue is saved as on Tizen;
+  timers are never paused. A lost renderer is replaced by a fresh WebView that boots the app anew,
+  after the player and the service stop.
+- **Background (B1, B2).** `PlaybackService` is a `mediaPlayback` foreground service, started on the
+  first play while Sonance is visible, kept between tracks, and stopped by Exit, renderer loss and
+  the activity's end. `PlayerEngine` holds the audio focus: a loss pauses through the app, a
+  transient loss resumes on regain, and a duck plays at 20 % without telling the page.
+- **Network.** Cleartext is allowed to any server (`android/res/xml/network_security_config.xml`), and only system
+  certificates are trusted. Safe Browsing and WebView metrics are off. The WebView never navigates
+  away from the app's page.
+- **Debug builds only:** WebView DevTools, a `sonance_url` intent extra (an `http://localhost` page
+  or `chrome://crash`, for the device harness `tests/tools/android-*.js`), and the audio-focus drill
+  `sonance_focus_drill`.
+- **targetSdk 35, pinned (G9).** At 36, Android 16 stops delivering `KEYCODE_BACK`; 37 adds a
+  local-network permission and stricter background audio. Sideloaded, so no store deadline applies.
+
 ## 6. Testing Strategy
 
 ### Browser Testing (Primary)
