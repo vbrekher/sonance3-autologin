@@ -17,8 +17,13 @@
 //       short press plays the next row
 //   w4  a debug-only chrome://crash load: the process survives and the app boots afresh
 //   w5  Home, then back: hidden then visible, the queue saved on hide, the same page and process
+//   k5  fix round 1, X4 and X2 (Gboard on the mock's Login, dummy values only): the keyboard opens
+//       only on OK (not after a sign-out, nor on Down and Up between fields), Gboard's own keys
+//       work while it is open, Back and Home close it, Next keeps it, Done signs in; then the
+//       SHIELD's sequence (sign in, sign out, sign in, Home) and one Right: one step, the key never
+//       reaches the IME (atrace: no ImeInputStage), and 10 s idle changes nothing
 //
-// Screenshots go to screenshots/androidtv/s2-*.png.
+// Screenshots go to screenshots/androidtv/s2-*.png (k5: f1-*.png).
 
 var path = require('path');
 var H = require('../../e2e/helpers/sonance.js');
@@ -327,8 +332,251 @@ async function w5() {
     return ok;
 }
 
+// ---------------------------------------------------------------------------------------------
+// k5 (fix round 1, F1): the system keyboard (X4) and the hidden keyboard's keys (X2)
+// ---------------------------------------------------------------------------------------------
+
+var IME = 'com.google.android.inputmethod.latin';
+var LOGIN_FIELDS = ['login-server', 'login-port', 'login-username', 'login-password'];
+// Dummy values only (the mock signs in with anything).
+var FILL = { 'login-server': 'localhost', 'login-port': '8091', 'login-username': 'demo', 'login-password': 'x' };
+
+function mark(text) { D.adb(['shell', 'log', '-t', 'Sonance', '-p', 'i', '"[Sonance] harness: ' + text + '"']); }
+
+function keyboardShown() {
+    return /mInputShown=true/.test(D.adb(['shell', 'dumpsys', 'input_method']));
+}
+
+// The keyboard stays as it is for `ms`: sampled every 500 ms.
+async function keyboardStays(shown, ms) {
+    for (var t = 0; t <= ms; t += 500) {
+        if (keyboardShown() !== shown) return false;
+        if (t < ms) await sleep(500);
+    }
+    return true;
+}
+
+async function untilKeyboard(shown, ms) {
+    for (var t = 0; t < (ms || 3000); t += 250) {
+        if (keyboardShown() === shown) return true;
+        await sleep(250);
+    }
+    return keyboardShown() === shown;
+}
+
+function loginState(page) {
+    return page.evaluate(function(ids) {
+        return { login: !!document.querySelector('.login-screen'), active: document.activeElement && document.activeElement.id,
+            h: innerHeight, values: ids.map(function(id) { var e = document.getElementById(id); return e ? e.value : null; }) };
+    }, LOGIN_FIELDS);
+}
+
+function pageKeys(rec) {
+    return rec.filter(function(e) { return e.type === 'keydown' || e.type === 'keyup'; })
+        .map(function(e) { return e.type + ' ' + e.keyCode; });
+}
+
+// Sign in with Gboard from the focused field: OK opens it (unless it is up), then each field is
+// typed and Next (ENTER, which Gboard takes as its action key) moves on; on the password field the
+// action key sends Enter, and the mock signs in.
+async function gboardSignIn(page, C, label) {
+    var at = Math.max(0, LOGIN_FIELDS.indexOf((await loginState(page)).active));
+    await takeRecord(page);
+    key('DPAD_CENTER');
+    var opened = await untilKeyboard(true);
+    await sleep(400);
+    var rec = pageKeys(await takeRecord(page));
+    var st = await loginState(page);
+    C.check(label + ': OK on ' + LOGIN_FIELDS[at] + ' opens the keyboard; the page sees no Enter, and Login stays',
+        opened && rec.length === 0 && st.login && st.active === LOGIN_FIELDS[at], 'page keys [' + rec.join(', ') + '], ' + JSON.stringify(st));
+    for (var i = at; i < LOGIN_FIELDS.length; i++) {
+        D.adb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END']);
+        D.adb(['shell', 'input', 'text', FILL[LOGIN_FIELDS[i]]]);
+        await sleep(400);
+        key('ENTER');
+        await sleep(900);
+        if (i < LOGIN_FIELDS.length - 1) {
+            var next = await loginState(page);
+            C.check(label + ': Next on ' + LOGIN_FIELDS[i] + ' moves on, and the keyboard stays up',
+                next.active === LOGIN_FIELDS[i + 1] && keyboardShown(), JSON.stringify(next));
+        }
+    }
+    await H.waitForScreen(page, 'home', 15000);
+    C.check(label + ': Done on the password field signs in; the keyboard is gone', !keyboardShown(),
+        'screen ' + await page.evaluate(function() { return App.getCurrentScreen(); }));
+}
+
+// Settings, Logout, then "Log Out" confirmed with OK, as the remote does (the dialog zone is set by
+// DevTools: its click leaves the top nav active).
+async function signOut(page) {
+    await H.navTo(page, 'settings');
+    await H.settle(page, 400);
+    await page.evaluate(function() {
+        document.getElementById('settings-logout-btn').click();
+        FocusManager.setActiveZone('confirm-dialog', 1, true);
+    });
+    await sleep(400);
+    key('DPAD_CENTER');
+    await page.waitForFunction(function() { return !!document.querySelector('.login-screen'); }, null, { timeout: 8000 });
+    await sleep(500);
+}
+
+// atrace's input and view categories while `fn` runs: the stages each of the app's input events
+// went through. ImeInputStage (and InputMethodManager's aq:imm counter) means the IME was given it.
+async function traceInput(fn) {
+    var adb = path.join(process.env.ANDROID_HOME || path.join(require('os').homedir(), 'Library', 'Android', 'sdk'), 'platform-tools', 'adb');
+    var out = '';
+    var child = require('child_process').spawn(adb, ['-s', D.SERIAL, 'shell', 'atrace', '-t', '4', '-b', '8192', 'input', 'view']);
+    child.stdout.on('data', function(d) { out += d; });
+    var done = new Promise(function(r) { child.on('close', r); });
+    await sleep(1500);
+    await fn();
+    await done;
+    var app = pid();
+    var mine = out.split('\n').filter(function(l) { return l.indexOf('|' + app + '|') > -1; });
+    var count = function(re) { return mine.filter(function(l) { return re.test(l); }).length; };
+    return { preIme: count(/B\|\d+\|ViewPreImeInputStage/), ime: count(/B\|\d+\|ImeInputStage/),
+        imm: count(/C\|\d+\|aq:imm\|1/), postIme: count(/B\|\d+\|ViewPostImeInputStage/) };
+}
+
+function imeLines(file, from) {
+    // Gboard's "skip consuming" lines (the SHIELD's InputBundle, the emulator's KeyboardWrapper).
+    return D.adb(['logcat', '-d', '-v', 'epoch', '--pid=' + D.adb(['shell', 'pidof', IME]).trim()]).split('\n').filter(function(l) {
+        var m = /^\s*(\d+\.\d+)/.exec(l);
+        return m && Number(m[1]) * 1000 >= from && /consumeEvent/.test(l);
+    });
+}
+
+function shot5(name) { return D.screencap(path.join(SHOTS, 'f1-' + name + '.png')); }
+
+async function k5() {
+    var C = require('./android-playback.js').Checks();
+    D.adb(['logcat', '-c']);
+    D.adb(['reverse', 'tcp:8091', 'tcp:8091']);
+    D.launch(BASE + '/index.html');
+    var c = await D.connect({ timeout: 20000 });
+    var p = c.page;
+    try {
+        await H.bootBundled(p, { extra: 'mockNoSession=1', waitFor: false });
+        await p.waitForFunction(function() { return !document.getElementById('splash') && !!document.querySelector('.login-screen'); },
+            null, { timeout: 15000 });
+        await sleep(800);
+        await installRecorder(p);
+        C.check('a fresh Login: no keyboard for 3 s', await keyboardStays(false, 3000), JSON.stringify(await loginState(p)));
+
+        // 1. The first sign-in.
+        await gboardSignIn(p, C, 'sign-in 1');
+
+        // 2. Sign out: Login focuses a field from the OK's handler, and the keyboard stays closed.
+        await signOut(p);
+        var out = await loginState(p);
+        C.check('after a sign-out, Login (' + out.active + ' focused) shows no keyboard for 3 s',
+            out.login && await keyboardStays(false, 3000) && out.h === 1080, JSON.stringify(out));
+        shot5('k5-login-after-signout');
+
+        // 3. Down and Up between fields never open it; the page moves focus.
+        await takeRecord(p);
+        var moves = [];
+        var shownOnMove = false;
+        var seq = ['DPAD_DOWN', 'DPAD_DOWN', 'DPAD_DOWN', 'DPAD_UP', 'DPAD_DOWN'];
+        for (var i = 0; i < seq.length; i++) {
+            key(seq[i]);
+            await sleep(700);
+            shownOnMove = shownOnMove || keyboardShown();
+            moves.push((await loginState(p)).active);
+        }
+        var moveKeys = pageKeys(await takeRecord(p));
+        C.check('Down and Up between fields move focus and never open the keyboard', !shownOnMove &&
+            moves.join() === 'login-port,login-username,login-password,login-username,login-password',
+            moves.join(' > ') + '; page keys [' + moveKeys.join(', ') + ']');
+        C.check('the password field focused: no keyboard for 3 s', await keyboardStays(false, 3000),
+            JSON.stringify(await loginState(p)));
+
+        // 4. OK opens it on the same field, with no Enter for the page; Gboard's own keys work in it.
+        key('DPAD_CENTER');
+        var opened = await untilKeyboard(true);
+        await sleep(500);
+        var okKeys = pageKeys(await takeRecord(p));
+        var st = await loginState(p);
+        C.check('OK on the password field opens the keyboard there; the page sees no Enter, and Login stays',
+            opened && okKeys.length === 0 && st.login && st.active === 'login-password' && st.h < 1080,
+            'page keys [' + okKeys.join(', ') + '], ' + JSON.stringify(st));
+        shot5('k5-keyboard-open');
+        var before = st.values[3];
+        key('DPAD_RIGHT');
+        await sleep(300);
+        key('DPAD_RIGHT');
+        await sleep(300);
+        key('DPAD_CENTER');
+        await sleep(800);
+        var typed = await loginState(p);
+        C.check('with the keyboard open, Gboard\'s navigation works: Right x2 and OK type into the field',
+            typed.values[3].length === before.length + 1 && typed.active === 'login-password' && keyboardShown(),
+            'value length ' + before.length + ' -> ' + typed.values[3].length);
+        await takeRecord(p);
+
+        // 5. Back closes it; no 10009 reaches the page; the field keeps focus and does not reopen it.
+        key('BACK');
+        var closed = await untilKeyboard(false);
+        await sleep(800);
+        var backKeys = pageKeys(await takeRecord(p));
+        var afterBack = await loginState(p);
+        C.check('Back closes the keyboard, and no 10009 reaches the page', closed && backKeys.length === 0 &&
+            afterBack.login && await keyboardStays(false, 2000), 'page keys [' + backKeys.join(', ') + '], ' + JSON.stringify(afterBack));
+
+        // 6. Open again, then Home and return: it stays closed (D223).
+        key('DPAD_CENTER');
+        await untilKeyboard(true);
+        key('HOME');
+        await sleep(2500);
+        var hidden = keyboardShown();
+        await bringToFront();
+        await sleep(1000);
+        var back = await loginState(p);
+        C.check('Home with the keyboard open, then back: it stays closed (D223)', !hidden && back.login &&
+            await keyboardStays(false, 3000) && back.h === 1080, 'shown while away ' + hidden + ', ' + JSON.stringify(back));
+
+        // 7. The second sign-in, from the server field: OK, then type every field (the sign-out
+        // cleared them), Next, Done.
+        for (var u = 0; u < 3; u++) { key('DPAD_UP'); await sleep(400); }
+        await gboardSignIn(p, C, 'sign-in 2');
+        await sleep(1000);
+
+        // 8. X2: one Right on Home.
+        var t0 = Date.now();
+        await takeRecord(p);
+        var homeBefore = await p.evaluate(function() { return JSON.stringify(FocusManager.snapshot()); });
+        mark('one Right');
+        var tr = await traceInput(function() { key('DPAD_RIGHT'); return sleep(600); });
+        await sleep(400);
+        var rightKeys = pageKeys(await takeRecord(p));
+        var homeAfter = await p.evaluate(function() { return JSON.stringify(FocusManager.snapshot()); });
+        var logLines = D.adb(['logcat', '-d', '-s', 'Sonance']).split('\n').filter(function(l) { return /key 22 down/.test(l); });
+        var gboard = imeLines(null, t0);
+        C.check('X2: one Right on Home moves one step: ' + homeBefore + ' -> ' + homeAfter,
+            rightKeys.join() === 'keydown 39,keyup 39' && homeBefore === '{"zone":"topnav","index":0}' &&
+            homeAfter === '{"zone":"topnav","index":1}', 'page keys [' + rightKeys.join(', ') + ']');
+        C.check('X2: the key never reaches the IME (atrace: pre-IME stage only, no ImeInputStage, no aq:imm)',
+            tr.preIme >= 2 && tr.ime === 0 && tr.imm === 0, JSON.stringify(tr));
+        C.check('X2: the host logs "key 22 down: past the IME"; Gboard logs no consumeEvent for it',
+            logLines.some(function(l) { return /\[Sonance\] key 22 down: past the IME/.test(l); }) && gboard.length === 0,
+            (logLines.slice(-1)[0] || '').trim() + '; Gboard consumeEvent lines ' + gboard.length);
+        C.check('X2: the keyboard is not shown (mInputShown=false)', !keyboardShown(), '');
+        await sleep(10000);
+        var idle = pageKeys(await takeRecord(p));
+        var homeIdle = await p.evaluate(function() { return JSON.stringify(FocusManager.snapshot()); });
+        C.check('X2: after 10 s idle, no key arrived and the focus is unchanged', idle.length === 0 && homeIdle === homeAfter,
+            homeIdle + ', page keys ' + idle.length);
+        shot5('k5-after-right');
+    } finally {
+        await close(c);
+    }
+    C.print();
+    return C.ok;
+}
+
 if (require.main === module) {
-    var checks = { k1: k1, k2: k2, k3: k3, w4: w4, w5: w5 };
+    var checks = { k1: k1, k2: k2, k3: k3, k5: k5, w4: w4, w5: w5 };
     var name = process.argv[2];
     if (!checks[name]) {
         console.error('usage: android-keys.js ' + Object.keys(checks).join('|'));

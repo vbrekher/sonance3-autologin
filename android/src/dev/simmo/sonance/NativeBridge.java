@@ -9,17 +9,20 @@ import android.webkit.JavascriptInterface;
  *
  * S2: platform identity (S3) and exit (S4). S3: the player (A1) and the screen saver (S5). S4: the
  * service's start on play and the notification's title (B1); audio focus (B2) is the engine's, on
- * play. @JavascriptInterface methods run on a binder thread, never the UI thread:
+ * play. Fix round 1: the page side of the system keyboard (X2, X4), for this bridge's WebView.
+ * @JavascriptInterface methods run on a binder thread, never the UI thread:
  * anything that touches the activity is posted to it, and the player's calls are posted to its own
  * thread, so none of them waits.
  */
 final class NativeBridge {
     private final MainActivity activity;
     private final PlayerEngine engine;
+    private final SonanceWebView view;
 
-    NativeBridge(MainActivity activity, PlayerEngine engine) {
+    NativeBridge(MainActivity activity, PlayerEngine engine, SonanceWebView view) {
         this.activity = activity;
         this.engine = engine;
+        this.view = view;
     }
 
     /** S3: the Android version, for the Platform row ("Android TV 11"). */
@@ -83,5 +86,17 @@ final class NativeBridge {
     @JavascriptInterface
     public void nowPlaying(String title) {
         activity.runOnUiThread(() -> activity.nowPlaying(title));
+    }
+
+    /** X2, X4: an editable has focus in the page (true) or none has (false). */
+    @JavascriptInterface
+    public void imeEditing(boolean editing) {
+        activity.runOnUiThread(() -> view.editing(editing));
+    }
+
+    /** X4: the shim has dropped inputmode after the host's open; the keyboard may show. */
+    @JavascriptInterface
+    public void imeReady() {
+        activity.runOnUiThread(view::imeReady);
     }
 }

@@ -36,12 +36,17 @@
         <meta-data android:name="android.webkit.WebView.EnableSafeBrowsing" android:value="false" />
         <meta-data android:name="android.webkit.WebView.MetricsOptOut" android:value="true" />
 
-        <!-- configChanges: a configuration change must never recreate the activity and reload the app. -->
+        <!--
+          configChanges: a configuration change must never recreate the activity and reload the app.
+          windowSoftInputMode (fix round 1, X4): the keyboard is never shown as the window takes focus
+          (D223), and the window resizes around it.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
             android:configChanges="keyboard|keyboardHidden|navigation|screenSize|smallestScreenSize|screenLayout|density|uiMode|fontScale|locale|layoutDirection|orientation">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

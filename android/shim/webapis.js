@@ -316,10 +316,13 @@
     // it; {action:'reset'} puts the attribute back. WebViews before 75 ignore inputmode="none".
     // X2: the host keeps the D-pad and OK away from the keyboard unless it is open, so it must know
     // whether an editable has focus: imeEditing(), once per change, after a setTimeout(0), because
-    // login.js blurs a field before it focuses the next.
+    // login.js blurs a field before it focuses the next. Each page starts by saying "no", so the
+    // host never keeps the state of the page before (a reload, a renderer recovery, the harness's
+    // navigation); the host cannot reset it in onPageStarted, which may land after this (D220).
     var keyboardOpen = false;
     var editing = false;
     var editingCheck = null;
+    bridge.imeEditing(false);
 
     function isEditable(el) {
         return !!el && el.nodeType === 1 &&

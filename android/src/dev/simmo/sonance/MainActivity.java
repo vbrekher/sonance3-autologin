@@ -31,9 +31,10 @@ import java.io.IOException;
  * S1: loading (W1), viewport (W2), settings and hardening (W3), first frame (W6), logging (W7),
  * and the debug-only harness hooks. S2: key translation (K1, K2), renderer recovery (W4), the
  * renderer's priority (W5) and exit (S4). S3: playback (PlayerEngine, A1-A4) and the screen saver
- * (S5). S4: the foreground service (B1) and, in debug builds, the audio-focus drill (B2).
+ * (S5). S4: the foreground service (B1) and, in debug builds, the audio-focus drill (B2). Fix round
+ * 1: the system keyboard (SonanceWebView: X2, X4), closed when Sonance stops or loses window focus.
  */
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements SonanceWebView.Host {
     static final String TAG = "Sonance";
 
     private static final String APP_URL = "file:///android_asset/www/index.html";
@@ -80,7 +81,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean debug;
-    private WebView webView;
+    private SonanceWebView webView;
     private PlayerEngine engine;
 
     // B1, on the UI thread: the activity is visible (onStart to onStop); the page has played since
@@ -131,7 +132,21 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         visible = false;
+        // X4: the keyboard never outlives Sonance in front, and the field cannot reopen it (D223).
+        if (webView != null) webView.closeKeyboard("Sonance stopped", true);
         super.onStop();
+    }
+
+    /** X4: losing the window's focus closes the keyboard, as onStop does. */
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Debug builds: X2 routes keys in the focused view's dispatchKeyEventPreIme, so record which view it is.
+        if (debug && hasFocus) {
+            View focused = getCurrentFocus();
+            Log.i(TAG, "[Sonance] window focus: " + (focused != null ? focused.getClass().getSimpleName() : "no view"));
+        }
+        if (!hasFocus && webView != null) webView.closeKeyboard("window lost focus", true);
     }
 
     @Override
@@ -152,8 +167,10 @@ public class MainActivity extends Activity {
      *   consumed, so a media key never reaches AudioManager (another app's media session).
      * - Swallow: nothing, as Tizen does not deliver unregistered keys (WebView would scroll on some).
      * - System (HOME, VOLUME_*, MUTE, POWER, SEARCH, ASSIST, VOICE_ASSIST, SETTINGS, TV_INPUT,
-     *   APP_SWITCH) and pass-through (D-pad, DPAD_CENTER, ENTER, NUMPAD_ENTER, anything unlisted)
-     *   both go to super: Android handles the first, and WebView sends the second as 37-40 and 13.
+     *   APP_SWITCH) and pass-through (anything unlisted) both go to super: Android handles the
+     *   first, and WebView the second. The D-pad, DPAD_CENTER, ENTER and NUMPAD_ENTER mostly never
+     *   get here: SonanceWebView gives them to the WebView before the IME stage (X2), which sends
+     *   them as 37-40 and 13; only with Sonance's keyboard up do they come this way, after it.
      * K2: BACK is translated, so it never finishes the activity by itself. With the system keyboard
      * up, the keyboard takes BACK before the activity sees it, and closes.
      */
@@ -191,7 +208,8 @@ public class MainActivity extends Activity {
      * Keys, player events and callbacks share the one queue, so each kind keeps its order. The
      * guard drops messages before the shim has loaded on the current page (D220).
      */
-    private void toPage(String message) {
+    @Override
+    public void toPage(String message) {
         if (webView == null) return;
         webView.evaluateJavascript("window.SonanceShim&&SonanceShim.receive(" + message + ")", null);
     }
@@ -294,6 +312,12 @@ public class MainActivity extends Activity {
         if (PlaybackService.stop(this)) Log.i(TAG, "[Sonance] service: stopping (" + why + ")");
     }
 
+    /** X3: the keyboard Sonance opened is up or gone; the engine ducks for it instead of pausing. */
+    @Override
+    public void typing(boolean typing) {
+        engine.setTyping(typing);
+    }
+
     /** B1: the current track's title, for the notification. */
     void nowPlaying(String title) {
         PlaybackService.setTitle(title);
@@ -319,15 +343,15 @@ public class MainActivity extends Activity {
         engine.release();
         stopService("renderer gone");
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        WebView dead = webView;
+        SonanceWebView dead = webView;
         webView = createWebView();
         setContentView(webView);
         dead.destroy();
         webView.loadUrl(APP_URL);
     }
 
-    private WebView createWebView() {
-        WebView wv = new WebView(this);
+    private SonanceWebView createWebView() {
+        SonanceWebView wv = new SonanceWebView(this, debug, this);
         wv.setBackgroundColor(BG_PRIMARY);
 
         WebSettings s = wv.getSettings();
@@ -364,7 +388,7 @@ public class MainActivity extends Activity {
         // B3). Its timers are never paused: no pauseTimers(), which would stop every WebView's.
         wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
 
-        wv.addJavascriptInterface(new NativeBridge(this, engine), "SonanceNative");
+        wv.addJavascriptInterface(new NativeBridge(this, engine, wv), "SonanceNative");
         wv.setWebViewClient(new Client());
         wv.setWebChromeClient(new Chrome());
         wv.setFocusable(true);

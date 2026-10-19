@@ -823,8 +823,8 @@ test.describe('B1 the notification\'s title', () => {
 // inputmode="none", so Chromium never shows it on focus (Login's programmatic focus, D223's
 // return). The host's {type:'ime', action:'open'} drops the attribute and is answered with
 // imeReady(), on which the host shows the keyboard; {action:'reset'} puts it back. The shim tells
-// the host whether an editable has focus (imeEditing), after a setTimeout(0): login.js blurs a
-// field before it focuses the next.
+// the host whether an editable has focus (imeEditing): "no" as each page loads, then each change,
+// after a setTimeout(0), because login.js blurs a field before it focuses the next.
 // ---------------------------------------------------------------------------------------------
 
 async function bootLogin(page: Page, opts: { bridge: boolean }) {
@@ -890,37 +890,47 @@ test.describe('X4 the keyboard opens only on OK', () => {
     expect(await inputmodes(page)).toEqual(['none', 'none', 'none', 'none']);
   });
 
+  test('the page reports "not editing" as it loads, so the host never keeps an earlier page\'s state', async ({ page }) => {
+    await boot(page, { bridge: true });
+    expect(await imeCalls(page)).toEqual([['imeEditing', false]]);
+    // A reload (or a renderer recovery) starts the host afresh, whatever the page before had focused.
+    await page.reload();
+    await H.waitForScreen(page, 'home');
+    expect(await imeCalls(page)).toEqual([['imeEditing', false]]);
+  });
+
   test('the editing report: after a setTimeout(0), once per change; login.js\'s blur-then-focus reports nothing', async ({ page }) => {
     await bootLogin(page, { bridge: true });
-    // Login's activate() focuses a field: one report.
-    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true]]);
+    // Login's activate() focuses a field: one report after the load's.
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', false], ['imeEditing', true]]);
     // Down on a field: login.js blurs it, then focuses the next, in one handler. Still editing.
     const before = await page.evaluate(() => document.activeElement!.id);
     await page.keyboard.press('ArrowDown');
     await page.waitForTimeout(100);
     expect(await page.evaluate(() => document.activeElement!.id)).toBe(FIELDS[FIELDS.indexOf(before) + 1]);
-    expect(await imeCalls(page)).toEqual([['imeEditing', true]]);
+    expect(await imeCalls(page)).toEqual([['imeEditing', false], ['imeEditing', true]]);
     // A blur is reported, but not synchronously: only after a setTimeout(0).
     expect(await page.evaluate(() => new Promise((resolve) => {
       (document.activeElement as HTMLElement).blur();
       const sync = (window as any).__bridgeCalls.filter((c: any[]) => c[0] === 'imeEditing').length;
       setTimeout(() => setTimeout(() => resolve([sync,
         (window as any).__bridgeCalls.filter((c: any[]) => c[0] === 'imeEditing').length]), 0), 0);
-    }))).toEqual([1, 2]);
-    expect(await imeCalls(page)).toEqual([['imeEditing', true], ['imeEditing', false]]);
+    }))).toEqual([2, 3]);
+    expect(await imeCalls(page)).toEqual([['imeEditing', false], ['imeEditing', true], ['imeEditing', false]]);
     // Focus back on a field: reported once more.
     await page.evaluate(() => document.getElementById('login-server')!.focus());
-    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true], ['imeEditing', false], ['imeEditing', true]]);
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', false], ['imeEditing', true], ['imeEditing', false],
+      ['imeEditing', true]]);
   });
 
   test('a focused field that is removed (Login torn down) reports the end of editing', async ({ page }) => {
     await bootLogin(page, { bridge: true });
-    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true]]);
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', false], ['imeEditing', true]]);
     await page.evaluate(() => {
       const s = document.querySelector('.login-screen')!;
       s.parentNode!.removeChild(s);
     });
-    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true], ['imeEditing', false]]);
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', false], ['imeEditing', true], ['imeEditing', false]]);
   });
 
   test('without the bridge, Login\'s fields have no inputmode, as today', async ({ page }) => {
