@@ -27,6 +27,10 @@
 //         phase, and dumpsys meminfo after each phase (defaults 30 and 30)
 //   b4    a 15-minute sleep timer, set on Now Playing, expiring while Sonance is hidden: how late
 //         playback stops (waits up to maxWaitMin, default 18)
+//   x3    fix round 1, X3: music playing on Login, OK opens the keyboard: the page plays on; a
+//         transient loss while typing (the drill, standing in for Gboard) ducks and its regain
+//         unducks with no resume; a loss still held 1 s after the keyboard closes is taken back
+//         (D238); not typing, a transient loss pauses as before
 //
 // No live server is used. Logs and screenshots go to screenshots/androidtv/s4-* (local, ignored).
 
@@ -642,8 +646,109 @@ async function b4(maxWaitMin) {
     return C.ok;
 }
 
+// X3 (fix round 1): the keyboard Sonance opens ducks the music instead of pausing it.
+async function x3() {
+    var L = startLogcat('f1-x3');
+    var C = P.Checks();
+    var c = await bootApp();
+    var p = c.page;
+    var st = function() {
+        return p.evaluate(function() {
+            var s = Player.getState();
+            return { playing: s.isPlaying, av: webapis.avplay.getState(), at: Math.round(s.currentTime * 10) / 10,
+                login: !!document.querySelector('.login-screen'), h: innerHeight };
+        });
+    };
+    var keyboard = function() { return /mInputShown=true/.test(D.adb(['shell', 'dumpsys', 'input_method'])); };
+    try {
+        // Music playing on Login: play, sign out (Logout pauses it), then play again on Login.
+        await playQueue(p, 12);
+        await untilPlaying(p, true);
+        await H.navTo(p, 'settings');
+        await H.settle(p, 400);
+        await p.evaluate(function() {
+            document.getElementById('settings-logout-btn').click();
+            FocusManager.setActiveZone('confirm-dialog', 1, true);
+        });
+        await sleep(400);
+        key('DPAD_CENTER');
+        await p.waitForFunction(function() { return !!document.querySelector('.login-screen'); }, null, { timeout: 8000 });
+        await sleep(1000);
+        await p.evaluate(function() { Player.play(); });
+        await untilPlaying(p, true);
+        await sleep(1000);
+
+        // A. OK opens the keyboard; the page plays on. The emulator's Gboard may take no focus.
+        mark('OK');
+        key('DPAD_CENTER');
+        await sleep(2500);
+        var a1 = await st();
+        await sleep(1000);
+        var a2 = await st();
+        var gboardTook = focusStack().some(function(r) { return /^com\.google\.android\.inputmethod/.test(r); });
+        C.check('OK on Login opens the keyboard, and the music plays on' + (gboardTook ? ' (Gboard took transient focus: ducked)' : ' (Gboard took no focus)'),
+            keyboard() && a1.login && a1.h < 1080 && a2.playing && a2.at > a1.at && lines(L, /focus: lost for now: pausing/).length === 0 &&
+            (!gboardTook || lines(L, /focus: lost for now while typing: ducking/).length === 1),
+            JSON.stringify(a1) + ' -> ' + JSON.stringify(a2) + '; focus ' + focusStack().join(' / '));
+
+        // B. A transient loss while typing ducks; the page is not told.
+        var ducks = lines(L, /focus: lost for now while typing: ducking/).length;
+        drill('transient');
+        await sleep(1500);
+        var b1s = await st();
+        await sleep(1000);
+        var b2s = await st();
+        C.check('typing: a transient loss ducks (volume 0.2), and the page plays on',
+            b2s.playing && b2s.at > b1s.at && lines(L, /focus: lost for now while typing: ducking/).length === ducks + 1 &&
+            lines(L, /focus: duck, volume 0\.2/).length >= 1 && lines(L, /focus: lost for now: pausing/).length === 0,
+            JSON.stringify(b2s) + '; focus ' + focusStack().join(' / '));
+
+        // C. The regain unducks and resumes nothing.
+        drill('release');
+        await sleep(1500);
+        var c1 = await st();
+        C.check('its regain unducks with no resume; still playing', c1.playing && lines(L, /focus: unduck, volume 1\.0/).length >= 1 &&
+            lines(L, /focus: regained after typing$/).length === 1 && lines(L, /regained: resuming/).length === 0,
+            JSON.stringify(c1) + '; focus ' + focusStack().join(' / '));
+
+        // D. The keyboard closes while the loss is still held: 1 s later the focus is taken back.
+        drill('transient');
+        await sleep(1500);
+        mark('Back');
+        key('BACK');
+        await sleep(400);
+        var held = focusStack().slice(-1)[0];
+        await sleep(1600);
+        var d1 = await st();
+        C.check('the keyboard closes with the loss still held: 1 s later the engine takes the focus back (D238)',
+            !keyboard() && d1.playing && /^drill/.test(held) && focusStack().slice(-1)[0] === 'player GAIN loss none' &&
+            lines(L, /focus: taken back after typing/).length === 1 && lines(L, /focus: unduck, volume 1\.0/).length >= 2,
+            'top after Back ' + held + ', after 2 s ' + focusStack().slice(-1)[0] + '; ' + JSON.stringify(d1));
+        drill('release');
+        await sleep(1000);
+
+        // E. Not typing, a transient loss pauses and its regain resumes (B2, unchanged).
+        drill('transient');
+        await untilPlaying(p, false);
+        drill('release');
+        await untilPlaying(p, true);
+        C.check('not typing: a transient loss pauses, and its regain resumes (B2)',
+            lines(L, /focus: lost for now: pausing/).length === 1 && lines(L, /focus: regained: resuming/).length === 1, '');
+        await p.evaluate(function() { Player.pause(); });
+    } finally {
+        await P.close(c);
+        await sleep(500);
+        L.stop();
+    }
+    console.log('logcat (focus, keyboard):\n' + entries(L).filter(function(e) {
+        return /focus|keyboard|harness/.test(e.msg);
+    }).map(function(e) { return '  ' + clock(e.t) + '  ' + e.msg; }).join('\n'));
+    C.print();
+    return C.ok;
+}
+
 if (require.main === module) {
-    var checks = { b1: b1, b2: b2, soak: soak, b4: b4 };
+    var checks = { b1: b1, b2: b2, soak: soak, b4: b4, x3: x3 };
     var name = process.argv[2];
     if (!checks[name]) {
         console.error('usage: android-background.js ' + Object.keys(checks).join('|') + ' (soak [fgMin bgMin], b4 [maxWaitMin])');
