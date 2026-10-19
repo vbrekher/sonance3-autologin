@@ -100,7 +100,7 @@ public class MainActivity extends Activity implements SonanceWebView.Host {
         // Set by aapt2 link --debug-mode only, so a release APK can never turn DevTools on (W7, P1).
         debug = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(debug);
-        engine = new PlayerEngine(this, message -> runOnUiThread(() -> toPage(message)));
+        engine = new PlayerEngine(this, debug, message -> runOnUiThread(() -> toPage(message)));
         webView = createWebView();
         setContentView(webView);
         String url = debugUrl(getIntent());
