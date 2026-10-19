@@ -7,6 +7,8 @@ import * as H from './helpers/sonance';
 //   calls (S4).
 // - Part 2 (S3): webapis.avplay over the bridge (A1-A4) and webapis.appcommon (S5).
 // - Part 3 (S4): audio focus from the host (B2) and the notification's title (B1).
+// - Part 4 (fix round 1, F1): the shim's side of the system keyboard (X4, X2): inputmode="none"
+//   while Sonance has not opened it, the host's open and reset, and the editing report.
 //
 // The Android host serves android/shim/webapis.js where Tizen serves webapis.js; here it is routed
 // to that path (the dev server 404s it). A fake window.SonanceNative, injected before any page
@@ -85,7 +87,9 @@ async function fakeBridge(page: Page, opts: { auto?: boolean } = {}) {
         calls.push(['setKeepScreenOn', keep, callback]);
         if (engine.auto) later({ type: 'callback', id: callback });
       },
-      nowPlaying(title: string) { calls.push(['nowPlaying', title]); }
+      nowPlaying(title: string) { calls.push(['nowPlaying', title]); },
+      imeEditing(editing: boolean) { calls.push(['imeEditing', editing]); },
+      imeReady() { calls.push(['imeReady']); }
     };
   }, opts.auto !== false);
 }
@@ -810,5 +814,117 @@ test.describe('B1 the notification\'s title', () => {
     await expect.poll(titles).toEqual(['Track 01']);
     await press(page, 10417, 'MediaFastForward');
     await expect.poll(titles).toEqual(['Track 01', 'Track 02']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Part 4 (fix round 1, F1): the system keyboard opens only on OK (X4), and a hidden keyboard never
+// takes the remote's keys (X2). While Sonance has not opened the keyboard, every editable carries
+// inputmode="none", so Chromium never shows it on focus (Login's programmatic focus, D223's
+// return). The host's {type:'ime', action:'open'} drops the attribute and is answered with
+// imeReady(), on which the host shows the keyboard; {action:'reset'} puts it back. The shim tells
+// the host whether an editable has focus (imeEditing), after a setTimeout(0): login.js blurs a
+// field before it focuses the next.
+// ---------------------------------------------------------------------------------------------
+
+async function bootLogin(page: Page, opts: { bridge: boolean }) {
+  const hits = await routeShim(page);
+  if (opts.bridge) await fakeBridge(page);
+  await H.bootBundled(page, { extra: 'mockNoSession=1', waitFor: false });
+  await page.waitForFunction(() => !document.getElementById('splash') && !!document.querySelector('.login-screen'));
+  expect(hits.n).toBe(1);
+}
+
+const FIELDS = ['login-server', 'login-port', 'login-username', 'login-password'];
+
+// Each Login field's inputmode attribute (null when it has none).
+const inputmodes = (page: Page) => page.evaluate((ids) => ids.map((id: string) =>
+  document.getElementById(id)!.getAttribute('inputmode')), FIELDS);
+
+const imeCalls = (page: Page) => page.evaluate(() => (window as any).__bridgeCalls
+  .filter((c: any[]) => c[0] === 'imeEditing' || c[0] === 'imeReady'));
+
+test.describe('X4 the keyboard opens only on OK', () => {
+  test('every editable carries inputmode="none" while the keyboard is closed: set when it is added, and on focus', async ({ page }) => {
+    await bootLogin(page, { bridge: true });
+    expect(await inputmodes(page)).toEqual(['none', 'none', 'none', 'none']);
+    // An editable added later gets it from the observer, before it can be focused.
+    expect(await page.evaluate(() => new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = '<input id="t-late"><textarea id="t-area"></textarea><div id="t-ce" contenteditable="true"></div><span id="t-span"></span>';
+      document.body.appendChild(wrap);
+      setTimeout(() => resolve(['t-late', 't-area', 't-ce', 't-span']
+        .map((id) => document.getElementById(id)!.getAttribute('inputmode'))), 0);
+    }))).toEqual(['none', 'none', 'none', null]);
+    // The focusin backstop: an editable that lost the attribute gets it back as it takes focus.
+    expect(await page.evaluate(() => {
+      const f = document.getElementById('login-port')!;
+      f.removeAttribute('inputmode');
+      f.focus();
+      return f.getAttribute('inputmode');
+    })).toBe('none');
+  });
+
+  test('the host\'s open drops inputmode everywhere and calls imeReady(); Next keeps it off; reset puts it back', async ({ page }) => {
+    await bootLogin(page, { bridge: true });
+    const n = await bridgeCount(page);
+    await native(page, [{ type: 'ime', action: 'open' }]);
+    expect(await inputmodes(page)).toEqual([null, null, null, null]);
+    expect(await page.evaluate((from) => (window as any).__bridgeCalls.slice(from), n)).toEqual([['imeReady']]);
+    // Gboard's Next moves focus to the next field without a key event: that field must not hide the
+    // keyboard, nor may an editable added while it is open.
+    await page.evaluate(() => {
+      document.getElementById('login-port')!.focus();
+      const late = document.createElement('input');
+      late.id = 't-late';
+      document.body.appendChild(late);
+    });
+    await page.waitForTimeout(50);
+    expect(await inputmodes(page)).toEqual([null, null, null, null]);
+    expect(await page.evaluate(() => document.getElementById('t-late')!.getAttribute('inputmode'))).toBeNull();
+    await native(page, [{ type: 'ime', action: 'reset' }]);
+    expect(await inputmodes(page)).toEqual(['none', 'none', 'none', 'none']);
+    expect(await page.evaluate(() => document.getElementById('t-late')!.getAttribute('inputmode'))).toBe('none');
+    // Closed again: a field that takes focus keeps it.
+    await page.evaluate(() => document.getElementById('login-username')!.focus());
+    expect(await inputmodes(page)).toEqual(['none', 'none', 'none', 'none']);
+  });
+
+  test('the editing report: after a setTimeout(0), once per change; login.js\'s blur-then-focus reports nothing', async ({ page }) => {
+    await bootLogin(page, { bridge: true });
+    // Login's activate() focuses a field: one report.
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true]]);
+    // Down on a field: login.js blurs it, then focuses the next, in one handler. Still editing.
+    const before = await page.evaluate(() => document.activeElement!.id);
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => document.activeElement!.id)).toBe(FIELDS[FIELDS.indexOf(before) + 1]);
+    expect(await imeCalls(page)).toEqual([['imeEditing', true]]);
+    // A blur is reported, but not synchronously: only after a setTimeout(0).
+    expect(await page.evaluate(() => new Promise((resolve) => {
+      (document.activeElement as HTMLElement).blur();
+      const sync = (window as any).__bridgeCalls.filter((c: any[]) => c[0] === 'imeEditing').length;
+      setTimeout(() => setTimeout(() => resolve([sync,
+        (window as any).__bridgeCalls.filter((c: any[]) => c[0] === 'imeEditing').length]), 0), 0);
+    }))).toEqual([1, 2]);
+    expect(await imeCalls(page)).toEqual([['imeEditing', true], ['imeEditing', false]]);
+    // Focus back on a field: reported once more.
+    await page.evaluate(() => document.getElementById('login-server')!.focus());
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true], ['imeEditing', false], ['imeEditing', true]]);
+  });
+
+  test('a focused field that is removed (Login torn down) reports the end of editing', async ({ page }) => {
+    await bootLogin(page, { bridge: true });
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true]]);
+    await page.evaluate(() => {
+      const s = document.querySelector('.login-screen')!;
+      s.parentNode!.removeChild(s);
+    });
+    await expect.poll(() => imeCalls(page)).toEqual([['imeEditing', true], ['imeEditing', false]]);
+  });
+
+  test('without the bridge, Login\'s fields have no inputmode, as today', async ({ page }) => {
+    await bootLogin(page, { bridge: false });
+    expect(await inputmodes(page)).toEqual([null, null, null, null]);
   });
 });

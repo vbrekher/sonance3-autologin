@@ -14,9 +14,11 @@
 // - tizen.tvaudiocontrol.setVolume: a no-op (Player.setVolume has no caller);
 // - window.SonancePlatform: the names the platform seam shows (S3);
 // - window.SonanceShim.receive(msg): the one entry point for native calls (keys, player events,
-//   callbacks and audio focus). Its presence is also the host's sign that the shim has loaded on
-//   the current page (D220);
-// - the current track's title, for the host's notification (B1).
+//   callbacks, audio focus and the keyboard). Its presence is also the host's sign that the shim
+//   has loaded on the current page (D220);
+// - the current track's title, for the host's notification (B1);
+// - the system keyboard's page side: inputmode, and whether an editable has focus (fix round 1,
+//   X2 and X4).
 (function() {
     'use strict';
 
@@ -305,7 +307,78 @@
         });
     });
 
-    var handlers = { key: injectKey, player: onPlayer, callback: onCallback, focus: onFocus };
+    // X4 (fix round 1): the system keyboard opens only on OK, as on Tizen. Chromium shows it for a
+    // field focused during a user action (Login's activate() after sign-out, login.js moving
+    // between fields on Down) and when the window regains focus (D223). So while Sonance has not
+    // opened it, every editable carries inputmode="none": set as it is added, with a focusin
+    // backstop. The host's {action:'open'} (OK on a field) drops the attribute everywhere, so
+    // Gboard's Next keeps the keyboard up on the next field, and imeReady() tells the host to show
+    // it; {action:'reset'} puts the attribute back. WebViews before 75 ignore inputmode="none".
+    // X2: the host keeps the D-pad and OK away from the keyboard unless it is open, so it must know
+    // whether an editable has focus: imeEditing(), once per change, after a setTimeout(0), because
+    // login.js blurs a field before it focuses the next.
+    var keyboardOpen = false;
+    var editing = false;
+    var editingCheck = null;
+
+    function isEditable(el) {
+        return !!el && el.nodeType === 1 &&
+            (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+    }
+
+    function closeEditable(el) {
+        if (!keyboardOpen && isEditable(el)) el.setAttribute('inputmode', 'none');
+    }
+
+    function closeAll(root) {
+        closeEditable(root);
+        if (root.querySelectorAll) {
+            Array.prototype.forEach.call(root.querySelectorAll('input, textarea, [contenteditable]'), closeEditable);
+        }
+    }
+
+    function checkEditing() {
+        if (editingCheck !== null) return;
+        editingCheck = setTimeout(function() {
+            editingCheck = null;
+            var now = isEditable(document.activeElement);
+            if (now === editing) return;
+            editing = now;
+            bridge.imeEditing(now);
+        }, 0);
+    }
+
+    // A focused field removed with its screen gets no blur in every Chromium, so removals are
+    // checked too.
+    new MutationObserver(function(records) {
+        records.forEach(function(r) {
+            Array.prototype.forEach.call(r.addedNodes, function(n) {
+                if (n.nodeType === 1) closeAll(n);
+            });
+            if (editing && r.removedNodes.length) checkEditing();
+        });
+    }).observe(document, { childList: true, subtree: true });
+
+    document.addEventListener('focusin', function(e) {
+        closeEditable(e.target);
+        checkEditing();
+    }, true);
+    document.addEventListener('focusout', checkEditing, true);
+
+    function onIme(msg) {
+        if (msg.action === 'open') {
+            keyboardOpen = true;
+            Array.prototype.forEach.call(document.querySelectorAll('[inputmode="none"]'), function(el) {
+                el.removeAttribute('inputmode');
+            });
+            bridge.imeReady();
+        } else if (msg.action === 'reset') {
+            keyboardOpen = false;
+            closeAll(document.documentElement);
+        }
+    }
+
+    var handlers = { key: injectKey, player: onPlayer, callback: onCallback, focus: onFocus, ime: onIme };
 
     window.SonanceShim = {
         receive: function(msg) {
