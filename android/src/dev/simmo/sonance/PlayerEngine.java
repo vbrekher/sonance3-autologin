@@ -33,6 +33,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * page is told to pause (and, after a transient loss, to resume), and a duck lowers the volume
  * here without telling the page. The focus listener runs on this thread too.
  *
+ * X3 (fix round 1): while the keyboard Sonance opened is up, a transient loss is the keyboard's
+ * (Gboard takes transient focus as it opens), so it ducks instead of pausing: music keeps playing
+ * while the user types, as on Tizen.
+ *
  * MediaPlayer stays behind this one class (§2.2), so a later engine swap touches only this file.
  */
 final class PlayerEngine {
@@ -66,6 +70,8 @@ final class PlayerEngine {
     private static final float DUCK_VOLUME = 0.2f;
     private static final String FOCUS_PAUSE = "{type:'focus',action:'pause'}";
     private static final String FOCUS_RESUME = "{type:'focus',action:'resume'}";
+    // X3, D238: how long after the keyboard closes the focus it took is asked for again.
+    private static final int TYPING_REFOCUS_MS = 1000;
 
     private final AtomicInteger lastId = new AtomicInteger();
     private final HandlerThread thread = new HandlerThread("SonancePlayer");
@@ -83,6 +89,11 @@ final class PlayerEngine {
     private boolean hasFocus;
     private boolean transientLoss;
     private boolean ducked;
+    // X3: Sonance's keyboard is up; the transient loss in force is the keyboard's (ducked, and its
+    // regain resumes nothing); the keyboard still holds the focus (no regain yet).
+    private boolean typing;
+    private boolean keyboardLoss;
+    private boolean keyboardHolds;
 
     /** One opened stream: AVPlay's open() to close(). */
     private static final class Session {
@@ -200,6 +211,16 @@ final class PlayerEngine {
     void close(int id) {
         handler.post(() -> {
             if (current != null && current.id == id) releaseCurrent();
+        });
+    }
+
+    /** X3: the host opened (true) or closed (false) the system keyboard. */
+    void setTyping(boolean on) {
+        handler.post(() -> {
+            if (typing == on) return;
+            typing = on;
+            handler.removeCallbacks(refocusAfterTyping);
+            if (!on && keyboardHolds) handler.postDelayed(refocusAfterTyping, TYPING_REFOCUS_MS);
         });
     }
 
@@ -404,6 +425,8 @@ final class PlayerEngine {
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             hasFocus = true;
             transientLoss = false;
+            keyboardLoss = false;
+            keyboardHolds = false;
             setDucked(false);
             return true;
         }
@@ -422,12 +445,23 @@ final class PlayerEngine {
             case AudioManager.AUDIOFOCUS_LOSS:
                 hasFocus = false;
                 transientLoss = false;
+                keyboardLoss = false;
+                keyboardHolds = false;
                 setDucked(false);
                 Log.i(MainActivity.TAG, "[Sonance] focus: lost: pausing");
                 sink.send(FOCUS_PAUSE);
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
                 transientLoss = true;
+                keyboardLoss = typing;
+                keyboardHolds = typing;
+                if (typing) {
+                    // X3: the page is not told. The log text differs from the pause's, which the
+                    // device checks count.
+                    Log.i(MainActivity.TAG, "[Sonance] focus: lost for now while typing: ducking");
+                    setDucked(true);
+                    break;
+                }
                 Log.i(MainActivity.TAG, "[Sonance] focus: lost for now: pausing");
                 sink.send(FOCUS_PAUSE);
                 break;
@@ -436,6 +470,14 @@ final class PlayerEngine {
                 break;
             case AudioManager.AUDIOFOCUS_GAIN:
                 setDucked(false);
+                handler.removeCallbacks(refocusAfterTyping);
+                if (keyboardLoss) {
+                    // X3: the page never paused, so nothing resumes. transientLoss stays set, so the
+                    // next play still asks for the focus (D231).
+                    Log.i(MainActivity.TAG, "[Sonance] focus: regained" + (keyboardHolds ? " after typing" : ""));
+                    keyboardHolds = false;
+                    break;
+                }
                 Log.i(MainActivity.TAG, "[Sonance] focus: regained" + (transientLoss ? ": resuming" : ""));
                 if (transientLoss) {
                     transientLoss = false;
@@ -446,6 +488,28 @@ final class PlayerEngine {
                 break;
         }
     }
+
+    /**
+     * X3, D238: the keyboard has closed, and 1 s later it still holds the focus it took. Without
+     * this, Sonance would play on ducked until the next play asked for the focus (D231 asks only
+     * on a play). Only a focus the engine held before the keyboard took it is asked for again.
+     */
+    private final Runnable refocusAfterTyping = new Runnable() {
+        @Override
+        public void run() {
+            if (typing || !keyboardHolds || !hasFocus) return;
+            int result = audio.requestAudioFocus(focusRequest);
+            if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                transientLoss = false;
+                keyboardLoss = false;
+                keyboardHolds = false;
+                Log.i(MainActivity.TAG, "[Sonance] focus: taken back after typing");
+                setDucked(false);
+            } else {
+                Log.w(MainActivity.TAG, "[Sonance] focus: not taken back after typing (" + result + ")");
+            }
+        }
+    };
 
     /** The volume of the open stream, and of any opened while ducked (load). */
     private void setDucked(boolean duck) {
@@ -458,8 +522,11 @@ final class PlayerEngine {
 
     private void abandonFocus() {
         audio.abandonAudioFocusRequest(focusRequest);
+        handler.removeCallbacks(refocusAfterTyping);
         hasFocus = false;
         transientLoss = false;
+        keyboardLoss = false;
+        keyboardHolds = false;
         setDucked(false);
     }
 
