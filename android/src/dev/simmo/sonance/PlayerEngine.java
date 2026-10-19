@@ -739,7 +739,9 @@ final class PlayerEngine {
         // The seek generation decoded now; frames before cutUs are dropped (a seek's target).
         private int gen;
         private long cutUs = -1;
-        private long lastSampleUs = -1;
+        // The media time where the audio decoded so far ends (D242): a raw extractor track's samples
+        // can be 2 s long (8 kHz WAV), so a sample's start says too little.
+        private long audioEndUs = -1;
         private boolean inputDone;
         private boolean outputDone;
         private boolean ended;
@@ -957,7 +959,7 @@ final class PlayerEngine {
             extractor.seekTo(us, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
             if (codec != null) codec.flush();
             cutUs = us;
-            lastSampleUs = us;
+            audioEndUs = us;
             inputDone = false;
             outputDone = false;
             ended = false;
@@ -988,7 +990,6 @@ final class PlayerEngine {
                     return;
                 }
                 long us = extractor.getSampleTime();
-                lastSampleUs = us;
                 extractor.advance();
                 raw.position(0);
                 raw.limit(n);
@@ -1009,8 +1010,7 @@ final class PlayerEngine {
                         codec.queueInputBuffer(in, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                         inputDone = true;
                     } else {
-                        lastSampleUs = extractor.getSampleTime();
-                        codec.queueInputBuffer(in, 0, n, lastSampleUs, 0);
+                        codec.queueInputBuffer(in, 0, n, extractor.getSampleTime(), 0);
                         extractor.advance();
                     }
                 }
@@ -1053,6 +1053,7 @@ final class PlayerEngine {
                 if (index >= 0) codec.releaseOutputBuffer(index, false);
                 index = -1;
             }
+            audioEndUs = Math.max(audioEndUs, us + data.remaining() / frameBytes * 1_000_000L / rate);
             if (cutUs >= 0) {
                 long frames = data.remaining() / frameBytes;
                 long skip = (cutUs - us) * rate / 1_000_000;
@@ -1114,13 +1115,13 @@ final class PlayerEngine {
 
         /**
          * The stream's data has ended. readSampleData answers -1 at the end and on a read error
-         * alike, so D242: a direct stream whose last sample is more than CUT_OFF_US short of its
+         * alike, so D242: a direct stream whose decoded audio ends more than CUT_OFF_US short of its
          * duration was cut off (a connection error, never "completed"); a transcode has no duration
          * and cannot be told apart. Otherwise the pad follows the last frame, and "completed" the pad.
          */
         private boolean end() {
-            if (durationUs > 0 && lastSampleUs < durationUs - CUT_OFF_US) {
-                report(ERROR_CONNECTION, "stream ended at " + lastSampleUs / 1000 + " of " + durationUs / 1000 + " ms");
+            if (durationUs > 0 && audioEndUs < durationUs - CUT_OFF_US) {
+                report(ERROR_CONNECTION, "stream ended at " + audioEndUs / 1000 + " of " + durationUs / 1000 + " ms");
                 return false;
             }
             ended = true;
@@ -1145,7 +1146,7 @@ final class PlayerEngine {
             }
             pending = pad;
             pendingIndex = -1;
-            pendingUs = lastSampleUs;
+            pendingUs = audioEndUs;
             padding = true;
             prime(true);
             return true;

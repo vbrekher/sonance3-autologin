@@ -13,9 +13,10 @@
 //   bad10    10 missing tracks in a row: each fails within 3 s (D224), and the decode threads are back
 //            to the baseline within 35 s of the last (a stuck setDataSource returns, then releases)
 //   cut      a FLAC and an MP3 cut off partway: an error, never "completed" (D242)
-//   ends     0.3 s and 6 s files complete once each, also when paused in their last 300 ms; a
-//            transcode (no length, no ranges) reports duration 0, plays to its end and completes
-//            once; Ogg Vorbis's duration (D226) and its end
+//   ends     0.3 s and 6 s files complete once each, also when paused in their last 300 ms; an
+//            8 kHz mono WAV, whose raw samples are 2 s long, completes rather than looking cut off
+//            (D242); a transcode (no length, no ranges) reports duration 0, plays to its end and
+//            completes once; Ogg Vorbis's duration (D226) and its end
 //   stall    a 5 s stall partway through a stream gives exactly one bufferingstart and one
 //            bufferingcomplete; then 20 normal tracks played to their end give none
 //   skip200  200 tracks skipped after a moment each: at most 2 decode threads at any sample (ps -T),
@@ -24,10 +25,13 @@
 //   cycles   50 random open/prepare/play/seek/pause/close cycles in about 30 s: no exception, and no
 //            event from a closed session
 //
-// The samples (never committed) are those a5 uses, plus a 0.3 s WAV and an MP3 with no Xing/Info
-// header, which with chunked=1 stands in for a live transcode (no length, no frame count):
+// The samples (never committed) are those a5 uses, plus a 0.3 s WAV, a 6 s 8 kHz mono WAV (the
+// dev server mock's shape), and an MP3 with no Xing/Info header, which with chunked=1 stands in for
+// a live transcode (no length, no frame count):
 //   ffmpeg -f lavfi -i "sine=frequency=330:sample_rate=44100:duration=0.3" -af volume=0.25 -ac 2 \
 //     -c:a pcm_s16le short-03-44.wav
+//   ffmpeg -f lavfi -i "sine=frequency=330:sample_rate=8000:duration=6" -af volume=0.25 -ac 1 \
+//     -c:a pcm_s16le wav-8-mono.wav
 //   ffmpeg -f lavfi -i "sine=frequency=330:sample_rate=44100:duration=6" -af volume=0.25 -ac 2 \
 //     -c:a libmp3lame -b:a 192k -write_xing 0 mp3-44-live.mp3
 // and, for cut, 20 s of noise (large enough that the cut comes after the extractor has read what it
@@ -43,7 +47,7 @@ var P = require('./android-playback.js');
 
 var SAMPLE = { wav: 'wav-16-44.wav', flac: 'flac-16-44.flac', flac96: 'flac-24-96.flac', mp3: 'mp3-44.mp3', aac: 'aac-44.m4a',
     vorbis: 'vorbis-44.ogg', short: 'short-03-44.wav', wav24: 'wav-24-44.wav', flac192: 'flac-24-192.flac', opus: 'opus-48.opus',
-    live: 'mp3-44-live.mp3', noiseFlac: 'noise-20s.flac', noiseMp3: 'noise-20s.mp3' };
+    live: 'mp3-44-live.mp3', noiseFlac: 'noise-20s.flac', noiseMp3: 'noise-20s.mp3', wav8: 'wav-8-mono.wav' };
 
 function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 function url(file, query) { return P.PROXY + '/codec/' + encodeURIComponent(file) + (query ? '?' + query : ''); }
@@ -222,6 +226,10 @@ async function ends(dir) {
         C.check('6 s, paused in its last 300 ms for 1 s: completes once, after the play', count(r, 'completed') === 1 &&
             count(r, 'error') === 0 && !!first(r, 'pause') && first(r, 'pause').x >= 5700 && first(r, 'completed').t > first(r, 'play').t,
             show(r));
+        // The extractor reads it in 2 s samples, so its last sample starts 1.9 s before the end.
+        r = await play(url(SAMPLE.wav8), { linger: 1500, timeout: 12000 });
+        C.check('6 s at 8 kHz mono (2 s raw samples): completes once, not cut off (D242)', count(r, 'completed') === 1 &&
+            count(r, 'error') === 0 && r.last >= 5500, show(r));
         r = await play(url(SAMPLE.live, 'chunked=1'), { linger: 1500, timeout: 12000 });
         C.check('a transcode (no length, no ranges): duration 0, plays to its end, completes once', r.duration === 0 &&
             count(r, 'completed') === 1 && count(r, 'error') === 0 && r.last >= 5500, show(r) + '; last position ' + r.last);
