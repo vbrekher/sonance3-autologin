@@ -364,7 +364,53 @@ Item 6 would show it as Sonance playing on after the other app starts; it should
 
 ## 7. Verification (S5, 2026-10-19)
 
-(Filled in at the end of T4.)
+The suites ran with the emulator shut down, as S4's baseline did. The device checks ran on the final
+debug APK (3.15.0, 31500), on the emulator, before the suites; no app file changed after them.
+
+```
+baseline (S4, 0af9ab9)           417 passed at 150 % (24.7m) and at 100 % (24.6m)
+final, 150 %                     417 passed (25.4m)  exit=0
+final, 100 %                     417 passed (25.0m)  exit=0
+final, 200 % subset              97 passed (5.7m)  exit=0  (focus-paths 14, npbar 15, ui-scale 21,
+                                 options-sheet 16, android-shim 31)
+intermittents                    none appeared
+./build.sh                       exit 0, with its gates (no ?. / ?? in the bundles; no
+                                 backdrop-filter, transition: all or bare gap: in the CSS);
+                                 index.html bundled, v3-15 on its three tags; in both packages
+                                 version="3.15.0" and V3.15 in the bundle (V3.14: 0); icon.png
+                                 256 x 256 (square) and 1920 x 1080 (oblong)
+./build-android.sh --debug       exit 0: payload 4 files, identical to Sonance3.wgt; dex 38 classes,
+                                 all in dev.simmo.sonance; apksigner verify OK; badging
+                                 LEANBACK_LAUNCHER, banner, sdkVersion 26, targetSdkVersion 35;
+                                 versionCode='31500' versionName='3.15.0'; 196K
+./build-android.sh --release     not built: the four SONANCE_* variables are not set; without
+                                 them it exits 1 and names all four
+version grep                     v3-14 / V3.14 / 3.14.0 in index.html, tests/mock-index.html,
+                                 build.sh, config.xml, settings.js, jellyfin-api.js and its spec:
+                                 none
+node --check                     11 files ok (the shim, jellyfin-api.js, settings.js, both
+                                 bundles, the six tests/tools/android-*.js)
+regression greps                 innerHTML: the nowplaying.js comment only; transition: all: the
+                                 :90 comment only; layout transitions, backdrop-filter, gap:,
+                                 max()/min()/clamp(), setInterval, zoom: none; .np-bg-image: no
+                                 transform, no transition
+device (emulator, final APK)     k1: PASS (26/26 keys as K1's table); a1: PASS; b1: PASS (9/9);
+                                 b2: PASS (10/10); Settings -> About "V3.15", "Platform: Android TV 14"
+docs                             every backticked path exists; no IPv4 address, credential or
+                                 keystore value; the commands checked (below)
+```
+
+Commands from the docs, checked: `./build-android.sh --release` without the variables (exit 1, all
+four named); `read -rs` in zsh and bash; `keytool -genkeypair -help` lists every option used; `adb
+help` lists `connect`, `pair`, `install -r` and `uninstall`; on the emulator, `adb uninstall
+dev.simmo.sonance` and `adb install -r android/build/sonance-debug.apk` (Success), and `adb logcat -d
+-s Sonance`, whose first line is `[Sonance] WebView 113.0.5672.136: screen 1920 px, initialScale 100,
+textZoom 100, debug true`. `dumpsys notification --noredact` runs, but the emulator had no posted
+notification of any app, so item 6's `pkg=` line is first seen on the SHIELD.
+
+Screenshot (read back): `screenshots/androidtv/s5-settings-about.png`, Settings on the emulator
+with the About box reading V3.15 and "Platform: Android TV 14". Earlier sessions' captures are in
+the same folder (local, not committed).
 
 ## 8. Decisions
 
