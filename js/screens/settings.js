@@ -321,7 +321,7 @@ var SettingsScreen = (function() {
         aboutBox.appendChild(el('div', { className: 'settings-about-title' }, 'Sonance'));
         aboutBox.appendChild(el('div', { className: 'settings-about-subtitle' }, 'By Simmo'));
 
-        aboutBox.appendChild(el('div', { className: 'settings-about-row' }, 'V3.14'));
+        aboutBox.appendChild(el('div', { className: 'settings-about-row' }, 'V3.15'));
 
         // ticket-3.xx-androidtv S3: on Android the shim names the platform ("Android TV 11").
         var platformValue = typeof SonancePlatform !== 'undefined' ? SonancePlatform.platformLabel
