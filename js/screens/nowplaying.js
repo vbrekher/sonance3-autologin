@@ -203,10 +203,12 @@ var NowPlayingScreen = (function() {
             var m = this.mode();
             Player.setStopAtTrackEnd(m === 'end');
             Player.off('trackendstop', _onSleepTrackEnd);
+            Player.off('progress', _onSleepProgress);
             if (m === 'end') {
                 Player.on('trackendstop', _onSleepTrackEnd);
             } else if (m > 0) {
                 this._deadline = Date.now() + m * 60000;
+                Player.on('progress', _onSleepProgress);
                 this._schedule();
             }
             _renderSleepChip();
@@ -231,13 +233,25 @@ var NowPlayingScreen = (function() {
         },
 
         _expire: function() {
+            // Expiry from a progress event leaves the chain's timer pending.
+            if (this._timer !== null) clearTimeout(this._timer);
             this._step = 0;
             this._timer = null;
+            Player.off('progress', _onSleepProgress);
             Player.pause();
             App.showToast('Sleep timer: playback paused');
             _renderSleepChip();
         }
     };
+
+    // Fix round 1, X5 (D239): the deadline is also checked on each of Player's progress events
+    // (at most every 100 ms while anything plays). Android TV's WebView stops a hidden page's timer
+    // chains about five minutes after Home (B4), so the chain alone would pause only on the
+    // return; the progress events keep coming, because native code drives them. Whichever comes
+    // first, the chain or an event, expires it once; on Tizen the chain is usually first.
+    function _onSleepProgress() {
+        if (SleepTimer.mode() > 0 && Date.now() >= SleepTimer._deadline) SleepTimer._expire();
+    }
 
     // "End of track": Player paused at the end of the track and cued the next.
     function _onSleepTrackEnd() {
