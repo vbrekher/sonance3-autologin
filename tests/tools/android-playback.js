@@ -3,20 +3,24 @@
 
 // Sonance — Android TV device checks for playback (ticket-3.xx-androidtv A1-A6, S5, W4; prompt S3
 // T4, T5), on the debug build in the sonance-tv emulator: webapis.avplay through the shim, on
-// PlayerEngine (MediaPlayer).
+// PlayerEngine (MediaExtractor, MediaCodec and AudioTrack since fix round 1, X1).
 //
 // The page is served through a small proxy on the Mac (port 8092, reversed to the emulator) in
-// front of the dev server (8091). MediaPlayer fetches media itself, outside the WebView, so the
+// front of the dev server (8091). The engine fetches media itself, outside the WebView, so the
 // proxy is where the harness sees and shapes it:
 // - it logs every media request (song id, format, timeOffset, Range, status) for the verdicts;
 // - stream.view for an id listed as missing answers 404 (a3);
-// - /codec/<file> serves a file from the directory given to a5, with byte ranges.
+// - /codec/<file> serves a file from the samples directory given to a5 or level, with byte
+//   ranges. Its query shapes the answer (fix round 1, for tests/tools/android-engine.js): cut=N
+//   closes the connection after byte N (with hold=MS, MS ms after that byte; and at once for a
+//   range from N on); stall=MS&at=N holds the body for MS ms at byte N; chunked=1 sends no length
+//   and no ranges, as a live transcode.
 // Everything else passes through to the dev server. The page's origin is the proxy, so the mock's
 // session (server URL = location.origin) sends its media there.
 //
 // Usage (dev server on 8091; the debug APK installed):
 //   NODE_PATH="$PWD/node_modules" node tests/tools/android-playback.js a1|a3|a4|a6|s5|w4
-//   NODE_PATH="$PWD/node_modules" node tests/tools/android-playback.js a5 <dir of samples>
+//   NODE_PATH="$PWD/node_modules" node tests/tools/android-playback.js a5|level <dir of samples>
 //
 //   a1  play, pause (the remote's play/pause key), a seek while paused, resume, and the next track
 //       at the end of one; the engine's tick rate (A2)
@@ -27,8 +31,16 @@
 //       bar seek a direct stream by 10 s
 //   s5  dumpsys window: KEEP_SCREEN_ON on Sonance's window while playing, and not while paused
 //   w4  chrome://crash while a track plays: the process lives, and the player is released
-//   a5  each file in <dir> through webapis.avplay: prepared or its error, the duration, and whether
-//       the position advances (the samples are generated outside the repository, never committed)
+//   a5  each file in <dir> through webapis.avplay: prepared or its error, the duration, whether
+//       the position advances, and (X1) the engine's "pcm" line against AudioFlinger's track for
+//       the app: the same encoding and rate (the samples are generated outside the repository,
+//       never committed)
+//   level  the sine probe (fix round 1, T5): sine-24-96.flac and sine-16-44.flac in <dir>, each a
+//       -6 dBFS 1 kHz sine, play to their end, and the debug engine's level of what its AudioTrack
+//       was given reads peak 0.50 +- 0.02 and RMS 0.354 +- 0.01. Made with
+//         ffmpeg -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t)|0.5*sin(2*PI*1000*t):s=96000:d=6" \
+//           -c:a flac -sample_fmt s32 -bits_per_raw_sample 24 sine-24-96.flac
+//       and the same at s=44100 with -c:a flac -sample_fmt s16 for sine-16-44.flac
 //
 // Screenshots go to screenshots/androidtv/s3-*.png. No live server is used.
 
@@ -61,7 +73,7 @@ function shot(name) { return D.screencap(path.join(SHOTS, 's3-' + name + '.png')
 // The proxy
 // ---------------------------------------------------------------------------------------------
 
-function serveSample(req, res, entry, file) {
+function serveSample(req, res, entry, file, q) {
     fs.stat(file, function(err, st) {
         if (err || !st.isFile()) {
             entry.status = 404;
@@ -70,6 +82,13 @@ function serveSample(req, res, entry, file) {
             return;
         }
         var headers = { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Accept-Ranges': 'bytes' };
+        if (q.get('chunked')) {
+            // A live transcode: no length, no ranges.
+            entry.status = 200;
+            res.writeHead(200, { 'Content-Type': headers['Content-Type'] });
+            fs.createReadStream(file).pipe(res);
+            return;
+        }
         var m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
         var start = 0, end = st.size - 1;
         if (m && (m[1] || m[2])) {
@@ -90,9 +109,32 @@ function serveSample(req, res, entry, file) {
         } else {
             entry.status = 200;
         }
+        var cut = q.get('cut') !== null ? Number(q.get('cut')) : -1;
+        if (cut >= 0 && start >= cut) {
+            entry.status = -1;
+            req.socket.destroy();
+            return;
+        }
         headers['Content-Length'] = end - start + 1;
         res.writeHead(entry.status, headers);
         if (req.method === 'HEAD') { res.end(); return; }
+        if (cut >= 0) {
+            // The body stops at byte `cut`, short of its length, and the connection closes.
+            var hold = Number(q.get('hold')) || 0;
+            fs.createReadStream(file, { start: start, end: Math.min(end, cut - 1) })
+                .on('end', function() { setTimeout(function() { res.destroy(); }, hold); }).pipe(res, { end: false });
+            return;
+        }
+        var stall = Number(q.get('stall')) || 0;
+        var at = Number(q.get('at')) || 0;
+        if (stall && at > start && at <= end) {
+            fs.createReadStream(file, { start: start, end: at - 1 }).on('end', function() {
+                setTimeout(function() {
+                    if (!res.destroyed) fs.createReadStream(file, { start: at, end: end }).pipe(res);
+                }, stall);
+            }).pipe(res, { end: false });
+            return;
+        }
         fs.createReadStream(file, { start: start, end: end }).pipe(res);
     });
 }
@@ -123,7 +165,8 @@ function startProxy() {
             return;
         }
         if (entry && u.pathname.indexOf('/codec/') === 0) {
-            serveSample(req, res, entry, path.join(sampleDir || '/nonexistent', path.basename(decodeURIComponent(u.pathname))));
+            serveSample(req, res, entry, path.join(sampleDir || '/nonexistent', path.basename(decodeURIComponent(u.pathname))),
+                u.searchParams);
             return;
         }
         var up = http.request({ host: '127.0.0.1', port: UPSTREAM_PORT, method: req.method, path: req.url, headers: req.headers },
@@ -453,8 +496,11 @@ async function a6() {
             return e.event + (e.position !== undefined ? ' ' + e.position : '');
         });
         var firstTick = list.filter(function(e) { return e.event === 'tick'; })[0];
+        // Fix round 1, T4: "seeked" is the target +- 1 ms, and the first tick lands from the target
+        // to the target + 400 ms.
         C.check('Play resumes it at 4 s: a seek in READY, then play', seeks.length === 1 && seeks[0] === 4000 &&
-            ev[0] === 'prepared' && /^seeked 40\d\d$/.test(ev[1]) && r.at > 4.4 && r.at < 5.6 && firstTick.position >= 4000,
+            ev[0] === 'prepared' && /^seeked \d+$/.test(ev[1]) && Math.abs(Number(ev[1].split(' ')[1]) - 4000) <= 1 &&
+            r.at > 4.4 && r.at < 5.6 && firstTick.position >= 4000 && firstTick.position <= 4400,
             fmt(r) + '; seekTo ' + JSON.stringify(seeks) + '; events ' + ev.join(', ') + '; first tick ' + firstTick.position);
 
         // The Now Playing progress bar, by the remote's keys.
@@ -470,17 +516,26 @@ async function a6() {
         for (var i = 0; i < steps.length; i++) {
             var b = await state(p);
             var n = (await p.evaluate(function() { return window.__seeks.length; }));
+            var k0 = (await natives(p)).length;
             key(steps[i][0]);
             await waitFor(p, function(count) { return window.__seeks.length > count; }, n, 5000);
             await sleep(700);
             var a = await state(p);
             var asked = (await p.evaluate(function() { return window.__seeks.slice(); })).slice(n);
             var want = Math.max(0, Math.min(b.duration, b.at + steps[i][1]));
-            // The app's target is its position at the key press, a moment after `b`.
+            var later = (await natives(p)).slice(k0);
+            var sk = later.filter(function(e) { return e.event === 'seeked'; });
+            var tk = sk.length ? later.filter(function(e) { return e.event === 'tick' && e.t >= sk[0].t; })[0] : null;
+            var target = Math.round(asked[0]);
+            // The app's target is its position at the key press, a moment after `b`. T4: the seek
+            // lands on its target, and the first tick after it within 400 ms of it.
             C.check(steps[i][0] + ': a direct stream seeks ' + (steps[i][1] > 0 ? '+' : '') + steps[i][1] + ' s',
                 asked.length === 1 && Math.abs(asked[0] / 1000 - want) < 0.8 && a.av === 'PLAYING' &&
-                a.at >= asked[0] / 1000 && a.at < asked[0] / 1000 + 1.2,
-                'before ' + b.at.toFixed(2) + ' s, seekTo ' + asked.join(',') + ' ms, after ' + a.at.toFixed(2) + ' s');
+                a.at >= asked[0] / 1000 && a.at < asked[0] / 1000 + 1.2 && sk.length === 1 &&
+                Math.abs(sk[0].position - target) <= 1 && !!tk && tk.position >= target && tk.position <= target + 400,
+                'before ' + b.at.toFixed(2) + ' s, seekTo ' + asked.join(',') + ' ms, seeked ' +
+                (sk.length ? sk.map(function(e) { return e.position; }).join(',') : 'none') + ', first tick ' +
+                (tk ? tk.position : 'none') + ', after ' + a.at.toFixed(2) + ' s');
         }
         await p.evaluate(function() { Player.pause(); });
         console.log('engine events:\n' + describeNatives(await natives(p)));
@@ -495,7 +550,7 @@ async function a6() {
 // WHY detached: while a DevTools session is attached, Chromium itself keeps the screen on (the
 // WebView's keepScreenOn), so the window shows KEEP_SCREEN_ON whatever the app does. The track is
 // set up through DevTools, paused, and the session closed; from then on only the remote's
-// play/pause key drives it, and dumpsys audio (MediaPlayer's state) tells playing from paused.
+// play/pause key drives it, and dumpsys audio (the AudioTrack's state) tells playing from paused.
 async function s5() {
     var c = await bootApp();
     try {
@@ -527,11 +582,30 @@ async function s5() {
     return C.ok;
 }
 
-// The player's entry in dumpsys audio (AudioPlaybackConfiguration) for this process, if any.
+// The engine's player in dumpsys audio (AudioPlaybackConfiguration) for this process, if any: its
+// AudioTrack since X1 (the engine creates no other player type).
 function audioPlayers(processId) {
     return D.adb(['shell', 'dumpsys', 'audio']).split('\n').filter(function(l) {
-        return /AudioPlaybackConfiguration/.test(l) && l.indexOf('/' + processId + ' ') > -1;
+        return /AudioPlaybackConfiguration/.test(l) && / type:android\.media\.AudioTrack /.test(l) &&
+            l.indexOf('/' + processId + ' ') > -1;
     }).map(function(l) { return l.trim().replace(/\s+attr:.*$/, ''); });
+}
+
+// X1: AudioFlinger's format codes (audio_format_t) by the names the engine's "pcm" line uses.
+var AF_FORMATS = { '00000001': '16-bit', '00000002': '8-bit', '00000003': '32-bit', '00000005': 'float', '00000006': '24-bit' };
+
+// The engine's last "pcm" line (the AudioTrack it opened), and AudioFlinger's active tracks whose
+// client is this app.
+function trackFormat() {
+    var app = pid();
+    var line = D.adb(['logcat', '-d', '-s', 'Sonance']).split('\n').filter(function(l) { return /\] player \d+: pcm /.test(l); }).pop();
+    var m = line && /player (\d+): pcm (\S+) -> (\S+), (\d+) Hz, (\d+) ch/.exec(line);
+    var tracks = [];
+    D.adb(['shell', 'dumpsys', 'media.audio_flinger']).split('\n').forEach(function(l) {
+        var t = /^\s*(?:\S\s+)?\d+\s+yes\s+(\d+)\s+\d+\s+\d+\s+\S\s+0x[0-9a-f]+\s+([0-9a-f]{8})\s+[0-9a-f]{8}\s+(\d+)\s/.exec(l);
+        if (t && t[1] === app) tracks.push({ format: AF_FORMATS[t[2]] || t[2], rate: Number(t[3]) });
+    });
+    return { pcm: m ? { session: Number(m[1]), from: m[2], to: m[3], rate: Number(m[4]), ch: Number(m[5]) } : null, tracks: tracks };
 }
 
 async function w4() {
@@ -589,69 +663,138 @@ async function a5(dir) {
     var c = await bootApp();
     var p = c.page;
     var rows = [];
+    var errors = [];
+    var ok = true;
     try {
         for (var i = 0; i < files.length; i++) {
             var url = PROXY + '/codec/' + encodeURIComponent(files[i]);
+            D.adb(['logcat', '-c']);
             var r = await p.evaluate(function(u) {
                 return new Promise(function(resolve) {
                     var av = webapis.avplay;
-                    var ticks = [];
-                    var out = { prepared: false, error: null, duration: 0, ticks: ticks };
+                    var out = { prepared: false, error: null, duration: 0 };
+                    window.__a5 = { ticks: [], error: null };
                     if (av.getState() !== 'NONE') av.close();
                     av.open(u);
                     av.setListener({
-                        oncurrentplaytime: function(ms) { ticks.push(ms); },
-                        onerror: function(e) { out.error = String(e); },
-                        onstreamcompleted: function() { out.completed = true; }
+                        oncurrentplaytime: function(ms) { window.__a5.ticks.push(ms); },
+                        onerror: function(e) { window.__a5.error = String(e); },
+                        onstreamcompleted: function() { window.__a5.completed = true; }
                     });
-                    var timer = setTimeout(function() { out.error = out.error || 'no answer in 8 s'; done(); }, 8000);
-                    function done() {
-                        clearTimeout(timer);
-                        try { av.close(); } catch (e) { /* closed */ }
-                        resolve(out);
-                    }
+                    var timer = setTimeout(function() { out.error = 'no answer in 8 s'; resolve(out); }, 8000);
                     av.prepareAsync(function() {
+                        clearTimeout(timer);
                         out.prepared = true;
                         out.duration = av.getDuration();
                         av.play();
-                        setTimeout(done, 2000);
+                        resolve(out);
                     }, function(e) {
+                        clearTimeout(timer);
                         out.error = e.name + ': ' + e.message;
-                        done();
+                        resolve(out);
                     });
                 });
             }, url);
-            var advanced = r.ticks.length >= 5 && r.ticks[r.ticks.length - 1] - r.ticks[0] > 1000;
-            var pass = r.prepared && !r.error && advanced;
-            rows.push((pass ? 'plays  ' : 'FAILS  ') + files[i].padEnd(20) + (r.prepared ? 'duration ' + r.duration + ' ms, ' : '') +
-                (r.ticks.length ? 'position ' + r.ticks[0] + ' -> ' + r.ticks[r.ticks.length - 1] + ' ms (' + r.ticks.length + ' ticks)' : 'no ticks') +
-                (r.error ? ', ' + r.error : ''));
+            // X1: the AudioTrack the engine opened against the track AudioFlinger mixes, a second in.
+            var tf = null;
+            if (r.prepared) {
+                await sleep(1000);
+                tf = trackFormat();
+                await sleep(1000);
+            }
+            var t = await p.evaluate(function() {
+                try { webapis.avplay.close(); } catch (e) { /* closed */ }
+                return window.__a5;
+            });
+            errors = errors.concat(D.adb(['logcat', '-d', '-s', 'Sonance']).split('\n').filter(function(l) { return /PLAYER_ERROR/.test(l); }));
+            var ticks = t.ticks;
+            var error = r.error || t.error;
+            var advanced = ticks.length >= 5 && ticks[ticks.length - 1] - ticks[0] > 1000;
+            var plays = r.prepared && !error && advanced;
+            var match = !!tf && !!tf.pcm && tf.tracks.length === 1 && tf.tracks[0].format === tf.pcm.to && tf.tracks[0].rate === tf.pcm.rate;
+            if (plays && !match) ok = false;
+            rows.push((plays ? 'plays  ' : 'FAILS  ') + files[i].padEnd(20) + (r.prepared ? 'duration ' + r.duration + ' ms, ' : '') +
+                (ticks.length ? 'position ' + ticks[0] + ' -> ' + ticks[ticks.length - 1] + ' ms (' + ticks.length + ' ticks)' : 'no ticks') +
+                (error ? ', ' + error : '') +
+                (tf ? '\n       pcm ' + (tf.pcm ? tf.pcm.from + ' -> ' + tf.pcm.to + ', ' + tf.pcm.rate + ' Hz, ' + tf.pcm.ch + ' ch' : 'none') +
+                    '; AudioFlinger ' + (tf.tracks.map(function(x) { return x.format + ' ' + x.rate + ' Hz'; }).join(', ') || 'no track') +
+                    (plays ? (match ? ': match' : ': MISMATCH') : '') : ''));
         }
     } finally {
         await close(c);
     }
     console.log(rows.join('\n'));
-    console.log('logcat (errors):\n' + playerLog().split('\n').filter(function(l) { return /PLAYER_ERROR/.test(l); }).join('\n'));
-    return true;
+    console.log('logcat (errors):\n' + errors.map(function(l) { return '  ' + l.trim(); }).join('\n'));
+    return ok;
 }
 
-// For tests/tools/android-background.js (S4).
+// Fix round 1, T5: the sine probe.
+var LEVEL_FILES = ['sine-24-96.flac', 'sine-16-44.flac'];
+
+async function level(dir) {
+    if (!dir || !fs.existsSync(dir)) throw new Error('level: give the directory of samples');
+    sampleDir = path.resolve(dir);
+    var c = await bootApp();
+    var p = c.page;
+    var C = Checks();
+    try {
+        for (var i = 0; i < LEVEL_FILES.length; i++) {
+            D.adb(['logcat', '-c']);
+            var r = await p.evaluate(function(u) {
+                return new Promise(function(resolve) {
+                    var av = webapis.avplay;
+                    var out = { completed: false, error: null };
+                    if (av.getState() !== 'NONE') av.close();
+                    av.open(u);
+                    var timer = setTimeout(function() { out.error = out.error || 'not completed in 12 s'; done(); }, 12000);
+                    function done() {
+                        clearTimeout(timer);
+                        try { av.close(); } catch (e) { /* closed */ }
+                        resolve(out);
+                    }
+                    av.setListener({
+                        onerror: function(e) { out.error = String(e); done(); },
+                        onstreamcompleted: function() { out.completed = true; done(); }
+                    });
+                    av.prepareAsync(function() { av.play(); }, function(e) { out.error = e.name + ': ' + e.message; done(); });
+                });
+            }, PROXY + '/codec/' + LEVEL_FILES[i]);
+            var log = D.adb(['logcat', '-d', '-s', 'Sonance']).split('\n');
+            var lv = log.filter(function(l) { return /\] player \d+: level /.test(l); }).pop() || '';
+            var pcm = (log.filter(function(l) { return /\] player \d+: pcm /.test(l); }).pop() || '').replace(/^.*\] player \d+: /, '');
+            var m = /level peak ([\d.]+), rms ([\d.]+) \((\d+) samples\)/.exec(lv);
+            var peak = m ? Number(m[1]) : NaN;
+            var rms = m ? Number(m[2]) : NaN;
+            C.check(LEVEL_FILES[i] + ': at the AudioTrack\'s input, peak 0.50 +- 0.02 and RMS 0.354 +- 0.01',
+                r.completed && !r.error && Math.abs(peak - 0.5) <= 0.02 && Math.abs(rms - 0.354) <= 0.01,
+                (m ? 'peak ' + m[1] + ', rms ' + m[2] + ' (' + m[3] + ' samples)' : 'no level line') + '; ' + (pcm || 'no pcm line') +
+                (r.error ? '; ' + r.error : '; completed'));
+        }
+    } finally {
+        await close(c);
+    }
+    C.print();
+    return C.ok;
+}
+
+// For tests/tools/android-background.js (S4) and android-engine.js (fix round 1).
 module.exports = {
     PROXY: PROXY, media: media, startProxy: startProxy, bootApp: bootApp, close: close, instrument: instrument,
     state: state, fmt: fmt, playerLog: playerLog, windowFlags: windowFlags, audioPlayers: audioPlayers,
-    Checks: Checks, waitFor: waitFor, pid: pid
+    Checks: Checks, waitFor: waitFor, pid: pid, trackFormat: trackFormat,
+    useSamples: function(dir) { sampleDir = path.resolve(dir); }
 };
 
 if (require.main === module) {
-    var checks = { a1: a1, a3: a3, a4: a4, a5: a5, a6: a6, s5: s5, w4: w4 };
+    var checks = { a1: a1, a3: a3, a4: a4, a5: a5, a6: a6, s5: s5, w4: w4, level: level };
     var name = process.argv[2];
     if (!checks[name]) {
-        console.error('usage: android-playback.js ' + Object.keys(checks).join('|') + ' (a5 <dir>)');
+        console.error('usage: android-playback.js ' + Object.keys(checks).join('|') + ' (a5 and level <dir>)');
         process.exit(2);
     }
     startProxy().then(function(server) {
         return checks[name](process.argv[3]).then(function(ok) {
-            // MediaPlayer may hold a keep-alive connection open.
+            // The engine's HTTP source may hold a keep-alive connection open.
             server.closeAllConnections();
             server.close();
             console.log(name + ': ' + (ok ? 'PASS' : 'FAIL'));

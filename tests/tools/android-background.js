@@ -198,7 +198,7 @@ function focusStack() {
     return rows;
 }
 
-// MediaPlayer's state for the process, from dumpsys audio (started / paused / ...).
+// The engine's AudioTrack state for the process, from dumpsys audio (started / paused / ...; X1).
 function players(app) {
     return P.audioPlayers(app).map(function(l) { return (/state:(\S+)/.exec(l) || [])[1]; });
 }
@@ -340,7 +340,7 @@ async function b1() {
         var app = P.pid();
         C.check('a first play while Sonance is hidden does not start it (and nothing is refused)',
             s4 === null && lines(L, /not started while hidden/).length >= 1 && lines(L, /start refused/).length === 0 &&
-            players(app).indexOf('started') > -1, describeService(s4) + '; top ' + D.topActivity() + '; MediaPlayer ' + players(app).join(','));
+            players(app).indexOf('started') > -1, describeService(s4) + '; top ' + D.topActivity() + '; AudioTrack ' + players(app).join(','));
         await bringToFront();
         await sleep(2000);
         var s5 = service();
@@ -353,7 +353,7 @@ async function b1() {
         var app2 = P.pid();
         C.check('chrome://crash (W4): the service stops, the player is released, the process lives',
             s6 === null && lines(L, /service: stopping \(renderer gone\)/).length === 1 && app2 === app &&
-            players(app2).indexOf('started') < 0, describeService(s6) + '; pid ' + app + ' -> ' + app2 + '; MediaPlayer ' + players(app2).join(','));
+            players(app2).indexOf('started') < 0, describeService(s6) + '; pid ' + app + ' -> ' + app2 + '; AudioTrack ' + players(app2).join(','));
         shot('b1-after-crash');
 
         // 6. The activity's end: Sonance's task removed while playing (as from the recents list).
@@ -375,7 +375,7 @@ async function b1() {
             s7 && s7.foreground && s8 === null && lines(L, /service: stopping \(the activity ends\)/).length === 1 &&
             players(app3).indexOf('started') < 0,
             'task #' + (task ? task[1] : '?') + '; before: ' + describeService(s7) + '; after: ' + describeService(s8) +
-            '; MediaPlayer ' + (players(app3).join(',') || 'none'));
+            '; AudioTrack ' + (players(app3).join(',') || 'none'));
     } finally {
         await sleep(500);
         L.stop();
@@ -413,10 +413,10 @@ async function b2() {
         await untilPlaying(p, false);
         await sleep(800);
         var a = await st();
-        C.check('a permanent loss: Sonance pauses through the app (the bar shows paused), and MediaPlayer is paused',
+        C.check('a permanent loss: Sonance pauses through the app (the bar shows paused), and its AudioTrack is paused',
             !a.playing && a.av === 'PAUSED' && a.icon === 'play' && players(app).indexOf('paused') > -1 &&
             lines(L, /focus: lost: pausing/).length === 1,
-            fmt(a) + '; MediaPlayer ' + players(app).join(',') + '; focus ' + focusStack().join(' / '));
+            fmt(a) + '; AudioTrack ' + players(app).join(',') + '; focus ' + focusStack().join(' / '));
         shot('b2-paused-by-focus');
         drill('release');
         await sleep(2000);
@@ -439,7 +439,7 @@ async function b2() {
         await sleep(1000);
         var b2s = await st();
         C.check('the regain resumes it', b2s.playing && b2s.icon === 'pause' && players(app).indexOf('started') > -1 &&
-            lines(L, /focus: regained: resuming/).length === 1, fmt(b2s) + '; MediaPlayer ' + players(app).join(','));
+            lines(L, /focus: regained: resuming/).length === 1, fmt(b2s) + '; AudioTrack ' + players(app).join(','));
 
         // C. The user paused first.
         key('MEDIA_PLAY_PAUSE');
@@ -536,7 +536,7 @@ async function soak(fgMin, bgMin) {
         await sleep(60000);
         var power = (/mWakefulness=(\w+)/.exec(D.adb(['shell', 'dumpsys', 'power'])) || [])[1];
         say('background: ' + Math.round((Date.now() - t1) / 60000) + ' min, top ' + D.topActivity() + ', wakefulness ' + power +
-            ', service ' + (service() ? 'running' : 'none') + ', MediaPlayer ' + players(ids0.host).join(','));
+            ', service ' + (service() ? 'running' : 'none') + ', AudioTrack ' + players(ids0.host).join(','));
     }
     var idsEnd = meminfo('after the ' + (fgMin + bgMin) + '-minute soak (' + bgMin + ' min in the background)');
     mark('back');
@@ -637,7 +637,7 @@ async function b4(maxWaitMin) {
     var late = paused ? paused.t - deadline : null;
     console.log('set ' + clock(set.t) + ', Home ' + clock(tHome) + ', deadline ' + clock(deadline) + ', playback paused ' +
         (paused ? clock(paused.t) + ' (' + (late / 1000).toFixed(1) + ' s after the deadline, ' + ((paused.t - tHome) / 60000).toFixed(1) + ' min after Home)' : 'never'));
-    console.log('page: ' + JSON.stringify(end) + '; MediaPlayer ' + mp.join(','));
+    console.log('page: ' + JSON.stringify(end) + '; AudioTrack ' + mp.join(','));
     C.check('the timer was set on Now Playing: "Sleep in 15 min"', /Sleep in 15 min/.test(set.label), set.label);
     C.check('B4: playback stops within 65 s of the deadline while Sonance is hidden', late !== null && late >= 0 && late <= 65000 &&
         end.vis.length >= 1 && /^hidden/.test(end.vis[0]) && !end.playing && mp.indexOf('started') < 0,
