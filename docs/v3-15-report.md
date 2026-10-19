@@ -6,9 +6,15 @@ versionCode 31500) adds an Android TV and Google TV app, from `tickets/prompt-3.
 decisions D216–D235 in the ticket's §9). Built in five sessions on 2026-10-18 and 2026-10-19, on
 the local branch `androidtv`, from `main` at 3.14 (`c4bd887`). Nothing is pushed, merged or tagged.
 
-Every automated check ran on the Android SDK's Google TV emulator (Android 14, WebView 113). The
-app has not yet run on real hardware: **§3 is the checklist for your SHIELD pass**, and §2 has two
-decisions for you.
+Your first SHIELD pass (2026-10-19) found two bugs: 24-bit FLAC played as static, and a remote key
+ran away after a sign-out and sign-in. **Fix round 1** (`tickets/prompt-3.xx-androidtv-fix1.md`,
+requirements X1–X5, decisions D236–D246, sessions F1 and F2 on 2026-10-19) fixed both, and took
+your two decisions (§2): the sleep timer now fires in the background, and the keyboard opens only
+on OK.
+
+Every automated check ran on the Android SDK's Google TV emulator (Android 14, WebView 113).
+**§3 is the checklist for your SHIELD pass**; the fix round's re-test is its items 2, 3, 6, 11
+and 13.
 
 ## 1. What shipped
 
@@ -17,23 +23,30 @@ decisions for you.
   no Gradle. The host:
   - lays the page out at 1920 × 1080 CSS px, as on the Q90R, at any output (W2);
   - translates the remote's keys into Tizen's codes, so `focus.js` is unchanged (K1, K2);
-  - plays through `android.media.MediaPlayer` behind a Tizen AVPlay shim, so the app runs its
-    Tizen playback path, transcode rules included (A1–A6);
+  - plays through its own player behind a Tizen AVPlay shim, so the app runs its Tizen playback
+    path, transcode rules included (A1–A6). Since fix round 1 (X1) that player is
+    `MediaExtractor` and `MediaCodec` into an `AudioTrack` opened in the PCM encoding the decoder
+    delivers, instead of `android.media.MediaPlayer` (§4.1, §4.7);
+  - keeps the D-pad and OK away from the system keyboard unless Sonance opened it, opens the
+    keyboard only on OK, and keeps the music playing while you type (X2, X4, X3);
   - keeps playing in the background through a `mediaPlayback` foreground service, and gives way to
     other apps' audio (B1, B2);
   - recovers from a lost WebView renderer without dying (W4), saves the queue when hidden (W5),
     and keeps the screen on only while playing (S5).
-- **One shared-code change:** `SonancePlatform`, the platform seam (S3). Settings → About reads
-  "Platform: Android TV 14" on the emulator, and Jellyfin's `Device=` is "Android TV". On Tizen
-  and in the browser both read as before.
+- **Two shared-code changes:** `SonancePlatform`, the platform seam (S3): Settings → About reads
+  "Platform: Android TV 14" on the emulator, and Jellyfin's `Device=` is "Android TV", while on
+  Tizen and in the browser both read as before. And (fix round 1, X5, D239) `SleepTimer` also
+  checks its deadline on the player's progress events, so it fires in the background; on Tizen
+  and in the browser it behaves as before.
 - **Version 3.15** everywhere V lists (`config.xml`, About, the cache-bust) and in JellyfinAPI's
   `Version=` header (D234). Both `.wgt` packages are rebuilt; on Tizen only the version changes.
 - **Packages:** `Sonance3.wgt` and `Sonance3-Oblong.wgt` (committed), and the debug APK
   `android/build/sonance-debug.apk` (local, not committed). **The release APK,
   `Sonance3-AndroidTV.apk`, is not built:** it is signed with your keystore, which no session
   creates or reads (§6).
-- **Tests:** `e2e/android-shim.spec.ts` (31 tests, a fake bridge) in the suite, now 417 tests;
-  device checks `tests/tools/android-{keys,playback,background,parity,devtools,seed-live}.js`.
+- **Tests:** `e2e/android-shim.spec.ts` (37 tests, a fake bridge) and
+  `e2e/sleep-timer-progress.spec.ts` (2) in the suite, now 425 tests; device checks
+  `tests/tools/android-{keys,playback,background,engine,parity,devtools,seed-live}.js`.
 - **Docs:** `docs/DEPLOYMENT-ANDROID-TV.md` (new), the README's "Android TV" section,
   `docs/ARCHITECTURE.md` §5a, the "Android TV" section of `CLAUDE.md`, `CHANGELOG-3.15.md`.
 
@@ -42,9 +55,16 @@ Commits on `androidtv`: S1 `fbfc3aa`, `03e86c3`, `71be9af`; S2 `a870540`, `ef432
 `84ebfb0`, `c9743de`, `0af9ab9`; S5 `1505b17` (version and packages) and the docs and report
 commits after it.
 
-## 2. Two decisions for you
+## 2. Two decisions (taken in fix round 1)
 
-### 2.1 B4: the sleep timer while Sonance is in the background (`[!]`)
+Both were yours after S5; you chose on 2026-10-19, and fix round 1 F1 built them.
+
+### 2.1 B4: the sleep timer while Sonance is in the background (decided: option 1, X5)
+
+**Done (D239).** `SleepTimer` also checks its deadline on `Player`'s progress events. On the
+emulator a 15-minute timer, set on Now Playing with Sonance then hidden, paused playback **0.2 s
+after its deadline** (`android-background.js b4`). The text below is the S4 measurement that led
+to the decision.
 
 **Measured on the emulator.** A 15-minute sleep timer was set on Now Playing, and Home was pressed
 1.3 s later. The deadline passed 15 minutes into the hidden period and nothing happened. Playback
@@ -70,7 +90,11 @@ starts keeps running, which is why background playback itself works.
 Option 1 is the only one that meets B4, and the smallest change. Checklist item 13 shows whether
 the SHIELD's newer WebView behaves the same; please choose after it.
 
-### 2.2 D223: the keyboard reopens on Login
+### 2.2 D223: the keyboard reopens on Login (decided: it opens only on OK, X4)
+
+**Done (D236, superseding D223).** The keyboard now opens only when you press OK on a field, as on
+Tizen: not after a sign-out, not when moving between fields, and not when Sonance comes back to the
+front. The text below is the S5 description that led to the decision.
 
 If you leave Sonance (Home) while a Login field is selected, the TV keyboard opens again by itself
 when you come back. WebView restores the keyboard for a focused text field when the window regains
@@ -124,8 +148,11 @@ screen, and the log (§3.1 step 5); the item says what else helps.
    and on the password field the action key signs in. Then browse every tab of Home, Library
    (Albums, Artists, Songs, Genres), Playlists, Queue, Search and Settings. Settings → About reads
    **V3.15** and "Platform: Android TV 11".
-   *Also (D223, §2.2):* select the Server field, press Home, and return to Sonance: the keyboard
-   reopens. Tell me whether you want that changed.
+   *Also (fix round 1, X4 and X2):* the keyboard opens only on OK on a field, never by itself:
+   after a sign-out, between fields with Down and Up, or when you select the Server field, press
+   Home and return. Then sign out, sign in again (typing with the keyboard), and on Home press
+   Right once: focus moves one step, and nothing keeps moving. With music playing, open the
+   keyboard on Login: the music plays on (more quietly while the keyboard is up).
    *Report:* the field or key that did not work.
 3. **Play.** Play an album. Pause, seek on the progress bar (Left and Right, ±10 s), and use next
    and previous, both with the on-screen controls and with the remote's Play/Pause, Rewind and
@@ -169,6 +196,9 @@ screen, and the log (§3.1 step 5); the item says what else helps.
     *Report:* a photo of any border, crop or blur.
 11. **Codecs (A5).** Play one track of each format your library has, and fill the SHIELD column of
     the table in §4.1. In particular:
+    - **24-bit FLAC (fix round 1, X1):** "Sad But True" (24/96) and "Back in Black" (24/192)
+      sound right, with no static. The log (§3.1 step 5) has one `pcm` line per track, for
+      example `player 7: pcm 16-bit -> 16-bit, 96000 Hz, 2 ch`.
     - **Ogg Vorbis (D226):** compare the total time Sonance shows with the real length, and seek
       near the end. Over HTTP MediaPlayer estimates a Vorbis file's length from its bitrate; on the
       emulator a 6 s file read 1.18 s.
@@ -179,12 +209,10 @@ screen, and the log (§3.1 step 5); the item says what else helps.
     against the real length. A format that plays on the Q90R but not here goes to ticket §8 Q3.
 12. **Jellyfin.** Sign in to Jellyfin and play a track. Jellyfin's Dashboard → Devices lists
     "Sonance" on "Android TV".
-13. **Sleep timer in the background (B4, §2.1).** Set a 15-minute sleep timer on Now Playing, press
-    Home, and leave Sonance in the background for 20 minutes. On the emulator, playback did not stop
-    at the deadline, only when Sonance came back (181.6 s late). The SHIELD's WebView is newer and
-    may differ.
-    *Report:* whether the music stopped at about 15 minutes, or only when you returned. Then choose
-    an option in §2.1.
+13. **Sleep timer in the background (B4, §2.1; fix round 1, X5).** Set a 15-minute sleep timer on
+    Now Playing, press Home, and leave Sonance in the background for 20 minutes: the music stops at
+    about 15 minutes (on the emulator, 0.2 s after the deadline).
+    *Report:* whether the music stopped at about 15 minutes, or only when you returned.
 14. **(Optional) Another device.** Install on another Android TV or Google TV device (a Chromecast
     with Google TV, say) and repeat items 1–4 (ticket §8 Q5).
 
@@ -195,22 +223,38 @@ The `sonance-tv` AVD: Google TV, Android 14 (API 34, build `UTT1.240131.001.F1`)
 
 ### 4.1 Codecs (A5)
 
-Through the shim, with 6 s samples generated by ffmpeg into a scratch folder (never committed).
+Through the shim, with 6 s samples generated by ffmpeg into a scratch folder (never committed). The
+emulator column is fix round 1's engine (X1): the engine's `pcm` line (the encoding decoded, then
+the AudioTrack's), which AudioFlinger's track for the app matched in format and rate every time
+(`android-playback.js a5`).
 
 | Format | Emulator (Android 14, AOSP software codecs) | SHIELD |
 |---|---|---|
-| FLAC 16/44.1 | Plays | |
-| FLAC 24/96 | Plays | |
-| FLAC 24/192 | Plays | |
-| MP3 (192 kb/s) | Plays | |
-| AAC (.m4a) | Plays | |
-| ALAC (.m4a) | Fails: no decoder in AOSP ("Failed to create audio/alac decoder"); the format toast (D224) | |
-| Ogg Vorbis | Plays; the duration is a bitrate estimate (D226) | |
+| FLAC 16/44.1 | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
+| FLAC 24/96 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 96000 Hz, 2 ch` | |
+| FLAC 24/192 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 192000 Hz, 2 ch` | |
+| MP3 (192 kb/s) | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
+| AAC (.m4a) | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
+| ALAC (.m4a) | Fails at once: no decoder in AOSP (`no decoder for audio/alac`); the format toast | |
+| Ogg Vorbis | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch`; the duration is a bitrate estimate (D226) | |
 | Opus (transcoded) | Plays, as the server's MP3 (A4) | |
-| WAV 16 | Plays | |
-| WAV 24 | Plays | |
+| WAV 16 | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
+| WAV 24 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
 
 Native Ogg Opus also plays (duration 0), but the app never uses it: Opus stays transcoded (D173).
+
+**Why the SHIELD heard static, and why the emulator did not** (fix round 1, F2 T1). The SHIELD's
+MediaPlayer took 24-bit FLAC from its FLACExtractor as float (`PCMe 4`) and opened its AudioTrack
+as 16-bit (`format(0x1)`): Android 11 opens a non-offloaded sink as 16-bit whatever it is given.
+On the emulator (Android 14) MediaPlayer's encodings agreed for every format: float into a float
+track (`00000005`) for FLAC 24/96, 24/192 and WAV 24, and 16-bit (`00000001`) for the rest. The
+new engine opens the track in the encoding the decoder reports. To an app's own process (rather
+than to MediaPlayer's media server), Android's FLAC and WAV extractors deliver 24-bit files as
+16-bit and say so (AOSP's `shouldExtractorOutputFloat`: float only for the media server's uid, on
+Android 10, 11 and today), so 24-bit files play at 16-bit (D244). The output mixes to its own rate
+anyway (48 kHz on the SHIELD, then E-AC3 to HDMI). **The sine probe** reads what the AudioTrack is
+given: a −6 dBFS 1 kHz sine as 24/96 FLAC and as 16/44.1 FLAC reads peak 0.5000 and RMS 0.3536 for
+both, as it should (0.50 ± 0.02, 0.354 ± 0.01).
 
 ### 4.2 Code-path audit (S2)
 
@@ -285,7 +329,7 @@ device's WebView and drivers differ.
 | After 30 min browsing and playing | 83,679 K | 218,436 K | 84,812 K | 199,632 K | 843,062 K |
 | After the 60-minute soak (30 min in the background) | 83,487 K | 218,364 K | 87,996 K | 203,288 K | 798,876 K |
 
-**B4:** `[!]`, §2.1.
+**B4:** met since fix round 1 (X5): 0.2 s after the deadline, hidden (§2.1).
 
 ### 4.5 A known race (D227)
 
@@ -311,15 +355,43 @@ Item 6 would show it as Sonance playing on after the other app starts; it should
   regain and duck behave as B2 says.
 - **Renderer loss (W4):** `chrome://crash` recovers to a fresh app with the same process.
 
+### 4.7 The engine (fix round 1, X1)
+
+`PlayerEngine` on `MediaExtractor`, `MediaCodec` and `AudioTrack` (D240–D245), on the final debug APK of fix round 1
+(`443f134`). Every check in §4.1–§4.6 ran again on it and passes; these are the engine's own
+(`tests/tools/android-engine.js`, and `android-playback.js level`):
+
+| Check | Result |
+|---|---|
+| The sine probe (−6 dBFS 1 kHz; 24/96 and 16/44.1 FLAC) | peak 0.5000, RMS 0.3536 at the AudioTrack's input, both |
+| 10 missing tracks in a row | each "couldn't be loaded" within 2.0 s; their decode threads gone 28.6 s after the last |
+| A FLAC and an MP3 cut off halfway | a connection error after 7.5 s and 8.5 s of play, never "completed" (D242) |
+| 0.3 s and 6 s files, also paused in their last 300 ms | each completes once; after a resume, 164 ms and 190 ms later |
+| A 6 s 8 kHz mono WAV, read in 2 s samples | completes once (a first version took it for cut off, D242) |
+| A live-transcode stand-in (chunked, no frame count) | duration 0, plays to its end, completes once |
+| A 5 s stall partway | one `bufferingstart` and one `bufferingcomplete`, then the end; 20 normal tracks: none (D243) |
+| 200 tracks skipped | at most 1 decode thread at a time; then 1 AudioFlinger track and 1 codec; native heap +4.3 MB allocated |
+| 50 random open/prepare/play/seek/pause/close cycles | no exception, no event from a closed session |
+| Seeks (`a1`, `a6`) | `seeked` reports the target exactly; the first tick 181–226 ms after it |
+| `soak 15 15` (15 min in front, browsing; 15 min hidden) | 45 tracks in the background; from "completed" to the next "started", a median of 196 ms in front and 24 ms hidden; no error |
+
 ## 5. What was not done
 
 - **The release APK** (`Sonance3-AndroidTV.apk`): it needs your keystore (§6). The debug APK is
   built and passes every gate.
-- **The SHIELD pass** (§3): yours. Failures go to a fix round, `tickets/prompt-3.xx-androidtv-fix1.md`.
-- **B4** (§2.1): not met on the emulator; the fix is your decision.
-- **D223** (§2.2): left as it is, pending your answer.
+- **The SHIELD pass** (§3): yours. Your first pass led to fix round 1
+  (`tickets/prompt-3.xx-androidtv-fix1.md`); its re-test is items 2, 3, 6, 11 and 13.
 - **D226** (Ogg Vorbis's estimated duration) and **ALAC**: no rule changed; item 11 and ticket §8
-  Q3 decide.
+  Q3 decide. On the new engine Vorbis still reads 1,177 ms for a 6 s file, and a seek lands in
+  proportion to the real length.
+- **24-bit resolution** (D244): 24-bit FLAC and WAV play at 16-bit. Keeping 24 bits would need
+  Sonance's own FLAC and WAV parsing, because Android gives an app's extractor no deeper samples;
+  not planned.
+- **Unexercised on the emulator** (fix round 1): the engine's float AudioTrack and its conversion
+  of 24- and 32-bit integer PCM (no AOSP extractor or decoder gives an app those, D244; they are
+  there for a device's own decoders, which item 11's `pcm` lines show); Gboard's own audio focus
+  while typing (the emulator's Gboard takes none; the focus drill stood in, X3); the keyboard
+  backstop, a keyboard that shows without OK (no emulator path shows one, X4).
 - **Not checkable on the emulator,** so on the checklist: the launcher banner (item 1), a real
   remote's hold and repeats (item 4), a real app taking the audio and the posted notification
   (item 6), Ambient Mode (items 6 and 7), 4K output (item 10), NVIDIA's decoders (item 11).
@@ -412,7 +484,27 @@ Screenshot (read back): `screenshots/androidtv/s5-settings-about.png`, Settings 
 with the About box reading V3.15 and "Platform: Android TV 14". Earlier sessions' captures are in
 the same folder (local, not committed).
 
+### 7.1 Fix round 1 (F1 and F2, 2026-10-19)
+
+F1 changed shared web code (X5's `SleepTimer`), so it ran the whole suite; F2 changed none (no file under `js/`, `css/`
+or `index.html`, nor the shim or any spec), so it ran `e2e/android-shim.spec.ts` alone. The device checks ran on each
+session's final debug APK.
+
+```
+F1, suites                       425 passed at 150 % (25.0m) and at 100 % (25.0m); the 200 % subset 103 (5.1m)
+F1, device                       k5 23/23, x3 5/5, k1 26/26, k3, w5, w4, b1 9/9, b2 10/10, b4 (0.2 s after the deadline)
+F2, e2e/android-shim.spec.ts     37 passed at 150 % (19.3s) and at 100 % (19.3s), unchanged since F1
+F2, ./build-android.sh --debug   exit 0: payload 4 files, identical to Sonance3.wgt; dex 49 classes, all in
+                                 dev.simmo.sonance; apksigner verify OK; badging LEANBACK_LAUNCHER, banner,
+                                 sdkVersion 26, targetSdkVersion 35; 3.15.0 (31500)
+F2, device (final APK 443f134)   a1, a3, a4, a5 (format check), a6, s5, w4, level; bad10, cut, ends, stall,
+                                 skip200, cycles; b1 9/9, b2 10/10, x3 5/5; k1 26/26, k3, k5 23/23, w5: all PASS
+F2, soak 15 15                   PASS: 45 tracks hidden, the last 14.9 min after Home; gaps (completed to started) a median
+                                 of 196 ms in front (max 875) and 24 ms hidden (max 54); one pid, no error
+F2, hygiene                      node --check on the shim and the three harness files; the regression greps hold
+```
+
 ## 8. Decisions
 
-D216–D235, each with its reason, and how each requirement's acceptance was read:
-`tickets/ticket-3.xx-androidtv.md` §9.
+D216–D235 (the programme) and D236–D246 (fix round 1), each with its reason, and how each
+requirement's acceptance was read: `tickets/ticket-3.xx-androidtv.md` §9.

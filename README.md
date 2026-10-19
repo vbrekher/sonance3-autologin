@@ -137,7 +137,7 @@ To build it yourself, with the Android SDK and a JDK (no Gradle): `./build.sh`, 
 
 ### First run
 
-Open **Sonance** from the Apps row and sign in as in [Setup](#setup), typing with the TV keyboard. Its **Next** key moves to the next field, and on the password field its action key signs in. The remote works as on the Samsung TV: arrows, OK, Back, and Play/Pause, Rewind and Fast-forward where the remote has them; hold OK on a song for the options menu.
+Open **Sonance** from the Apps row and sign in as in [Setup](#setup): press OK on a field to type with the TV keyboard, which opens only on OK, as on the Samsung TV. Its **Next** key moves to the next field, and on the password field its action key signs in. The remote works as on the Samsung TV: arrows, OK, Back, and Play/Pause, Rewind and Fast-forward where the remote has them; hold OK on a song for the options menu.
 
 A few things differ from the Samsung version: the text is in the system font, because SamsungOne is Samsung's own; the album's Yellow and Blue actions need a remote with colour keys; and there is no now-playing card on the Google TV home screen. The guide lists them all under "Known differences".
 

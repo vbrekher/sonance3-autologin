@@ -74,13 +74,16 @@ computer**, then **OK**. `adb devices` should list the device as `device`, not `
 ## Step 3: First run
 
 1. Open **Sonance** from the Apps row. Its banner is the wide Sonance tile.
-2. The login screen opens. Select each field and type with the TV keyboard:
+2. The login screen opens. Select each field and press **OK** to type with the TV keyboard, which
+   opens only on OK, as on the Samsung version:
    - **Server:** the address, with `http://` or `https://`;
    - **Port:** Navidrome's (4533 by default) or Jellyfin's (8096 by default);
    - **Username** and **Password** (on Jellyfin, leave the password empty if the account has none).
 
    The keyboard's **Next** moves to the next field, and on the password field its action key
-   signs in. **Back** closes the keyboard first, then leaves the field.
+   signs in. **Back** closes the keyboard first, then leaves the field. Music that is playing keeps
+   playing while you type (more quietly on a device whose keyboard takes the audio, as the
+   SHIELD's does).
 3. You are in. The remote works as on the Samsung version: arrows, OK, Back, and
    Play/Pause, Rewind and Fast-forward where the remote has them. Hold OK on a song for the options
    menu.
@@ -170,15 +173,30 @@ restricted, add `*`: the app's pages come from the device itself (`file://`), so
 ordinary web origin. Navidrome allows any origin by default.
 
 ### A track shows "format not supported" and is skipped
-Android plays FLAC (24-bit and up to 192 kHz from Android 10), MP3, AAC, Ogg Vorbis, WAV and,
-through the server, Opus. **ALAC** (Apple Lossless, `.m4a`) depends on the device: Android itself
+Android plays FLAC (up to 192 kHz), MP3, AAC, Ogg Vorbis, WAV and, through the server, Opus. **ALAC** (Apple Lossless, `.m4a`) depends on the device: Android itself
 has no ALAC decoder, so it plays only where the device maker added one. Converting those files to
 FLAC, which is lossless too, makes them play everywhere.
 
+### 24-bit FLAC or WAV
+24-bit files play, at 16-bit resolution. Android hands an app's player 16-bit samples for them (it
+gives deeper samples only to its own media server), and the TV's output mixes everything to its
+own rate (48 kHz on the SHIELD, which then encodes the mix for HDMI), so the difference cannot be
+heard. Before Sonance's fix round 1, 24-bit FLAC played as loud static on Android 10 and 11 (the
+SHIELD): if you hear that, install the current APK.
+
 ### An Ogg Vorbis track's time or progress bar is off
 Android estimates an Ogg Vorbis file's length from its bitrate while streaming, so the total time
-and the progress bar can be off, and a seek cannot go past the estimated length. Other formats
-are exact.
+and the progress bar can be off, a seek cannot go past the estimated length, and a seek lands in
+proportion to the real length rather than at the time chosen. Other formats are exact.
+
+### The keyboard
+- **It opens only when you press OK on a field,** as on the Samsung version. On a WebView older
+  than version 75 (`dumpsys package com.google.android.webview | grep versionName`), it also opens
+  as you select a field; update Android System WebView from the Play Store.
+- **A key that repeats by itself** (the screen keeps moving after you let go): on the SHIELD, a
+  hidden Gboard could repeat a remote key after a sign-out and sign-in until the box restarted.
+  The current APK keeps remote keys away from a hidden keyboard. If it ever happens, this stops
+  it at once: `adb shell am force-stop com.google.android.inputmethod.latin`.
 
 ### The update is refused
 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`: the APK is signed with another key. See [Updating](#updating).
@@ -192,7 +210,5 @@ are exact.
   Google TV home screen.
 - **Notification:** on Android 13 and later, the playback notification is not shown (the app does
   not ask for the notification permission). Playback is unaffected.
-- **Sleep timer in the background:** with Sonance in the background, the sleep timer may not stop
-  playback until you return to Sonance (see `docs/v3-15-report.md`, B4).
-- **The keyboard on Login:** if you leave Sonance while a Login field is selected, the keyboard
-  opens again when you return. Press Back to close it.
+- **Typing ducks the music:** where the TV keyboard takes the audio (the SHIELD's Gboard does),
+  music plays on at a lower volume while it is open; on the Samsung version it plays on unchanged.

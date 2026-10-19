@@ -340,18 +340,21 @@ Sonance.wgt (ZIP archive)
 ## 5a. Android TV host (v3.15)
 
 Since 3.15 the same web app also ships as an Android TV APK (`tickets/ticket-3.xx-androidtv.md`,
-decisions D216–D235 in its §9). The system WebView hosts it, inside a small native wrapper in Java
-that uses Android framework APIs only: no androidx, Media3/ExoPlayer, Leanback or Kotlin.
+decisions D216–D235 in its §9, and fix round 1's D236–D246). The system WebView hosts it, inside a
+small native wrapper in Java that uses Android framework APIs only: no androidx, Media3/ExoPlayer,
+Leanback or Kotlin.
 
 ```
 Android TV device
 └── dev.simmo.sonance (APK)
     ├── MainActivity (Java)     full-screen WebView, key translation (K1), lifecycle (W5), renderer recovery (W4)
-    │     └── WebView  file:///android_asset/www/index.html   ← the .wgt's web payload, byte for byte
+    │     └── SonanceWebView   the WebView: keys before the IME (X2), the system keyboard only on OK (X4)
+    │           │  file:///android_asset/www/index.html   ← the .wgt's web payload, byte for byte
     │           ├── $WEBAPIS/webapis/webapis.js  ← android/shim/webapis.js: window.webapis + window.tizen
     │           └── js/sonance-*.min.js          ← unchanged; runs its Tizen (AVPlay) code path
     ├── NativeBridge (@JavascriptInterface)       the shim's only door into native code
-    ├── PlayerEngine (Java)     android.media.MediaPlayer on its own thread; events → evaluateJavascript
+    ├── PlayerEngine (Java)     MediaExtractor + MediaCodec + AudioTrack (X1), a decoder thread per stream;
+    │                           events → evaluateJavascript
     └── PlaybackService (Java)  mediaPlayback foreground service (B1); PlayerEngine holds the audio focus (B2)
 ```
 
@@ -390,6 +393,8 @@ and post their work; none blocks the UI thread.
 | `playerSeek(session, ms, seekId)` | A `SEEK_CLOSEST` seek; `seekId` matches its `seeked` event |
 | `setKeepScreenOn(keep, callbackId)` | `FLAG_KEEP_SCREEN_ON` for AVPlay's screen-saver call (S5); answers with a callback |
 | `nowPlaying(title)` | The current track's title, for the service's notification |
+| `imeEditing(editing)` | An editable has focus in the page, or none has: reported once per change, after a `setTimeout(0)`, and "no" as each page loads (X2, X4, D236) |
+| `imeReady()` | The shim has dropped `inputmode` after the host's `open`: the host shows the keyboard (X4) |
 
 **Native to page.** Every message goes through `MainActivity.toPage()` on the UI thread, as
 `SonanceShim.receive(msg)` (guarded by the page's own `window.SonanceShim`, D220):
@@ -400,6 +405,7 @@ and post their work; none blocks the UI thread.
 | `{type:'player', session, event}` | `prepared` (with `duration`), `tick` (with `position`, every 200 ms while playing), `seeked` (with `seek`, `position`), `completed`, `bufferingstart`, `bufferingcomplete`, `error` (with `error`, an AVPlayError value) |
 | `{type:'callback', id}` | A bridge call has finished (`setKeepScreenOn`) |
 | `{type:'focus', action:'pause'\|'resume'}` | Audio focus: another app took it (pause through `Player.pause()`), or gave a transient loss back (resume only what was paused, B2) |
+| `{type:'ime', action:'open'\|'reset'}` | The system keyboard: OK on a field opens it (the shim drops every editable's `inputmode="none"`, then calls `imeReady()`), and it closes (the shim puts the attribute back) (X4) |
 
 The shim drops player events from any session but the current one, and answers `getState` and
 `getDuration` from its own state. Its AVPlay states and errors follow Samsung's AVPlay reference
@@ -412,6 +418,20 @@ The shim drops player events from any session but the current one, and answers `
 - **Keys (K1).** Four groups: pass through (the D-pad and OK, which WebView already sends as 37–40
   and 13), translate (BACK, the media keys, the colour keys), swallow (channel, page, info, guide,
   menu, captions and other TV-only keys, D221) and system (Home, volume, power, search…).
+- **Keys before the keyboard (X2, D237).** Android hands every key to the bound keyboard (IME)
+  before the views see it, shown or not; on the SHIELD a hidden Gboard began its own repeat of a
+  Right press and never stopped. `SonanceWebView.dispatchKeyEventPreIme` gives the D-pad, OK, ENTER
+  and NUMPAD_ENTER straight to the WebView, unless Sonance opened the keyboard and it is showing.
+  The route is chosen at a key's down; its repeats and its up follow it.
+- **The keyboard only on OK (X4, D236).** As on Tizen. The shim keeps `inputmode="none"` on every
+  editable while the keyboard is closed, so Chromium never shows it by itself (after a sign-out,
+  between Login's fields, or when the window regains focus). OK on a field is consumed by the host
+  (the page sees no Enter), the shim drops the attribute, and the host shows the keyboard. It
+  closes on Back, when editing ends, when the activity stops or loses its window focus; a keyboard
+  that shows without OK is hidden. The manifest has `stateAlwaysHidden|adjustResize`.
+- **Typing (X3, D238).** While the keyboard Sonance opened is up, a transient audio-focus loss (the
+  keyboard's own) ducks the music to 20 % instead of pausing it; a loss still held a second after
+  the keyboard closes is taken back.
 - **Lifecycle (W4, W5).** Leaving Sonance makes the page hidden, so the queue is saved as on Tizen;
   timers are never paused. A lost renderer is replaced by a fresh WebView that boots the app anew,
   after the player and the service stop.
@@ -419,12 +439,39 @@ The shim drops player events from any session but the current one, and answers `
   first play while Sonance is visible, kept between tracks, and stopped by Exit, renderer loss and
   the activity's end. `PlayerEngine` holds the audio focus: a loss pauses through the app, a
   transient loss resumes on regain, and a duck plays at 20 % without telling the page.
+- **The sleep timer in the background (X5, D239).** A hidden WebView page's timer chains stop after
+  about 5 minutes, but script that native code starts still runs. So `SleepTimer`
+  (`js/screens/nowplaying.js`, shared code) also checks its deadline on `Player`'s `progress`
+  events, which the engine's ticks drive; it fires within about 200 ms of the deadline.
+- **The engine (X1, D240–D245).** `PlayerEngine` decodes with `MediaExtractor` and `MediaCodec` (no
+  codec for a raw extractor track: the FLAC and WAV extractors decode themselves) and plays through
+  an `AudioTrack` opened in the PCM encoding the decoder actually delivers. Android 11's
+  `MediaPlayer` opened its sink as 16-bit whatever it was given, and played the SHIELD's float
+  24-bit FLAC as static. Integer PCM wider than 16 bits becomes float on every API level. To an
+  app's own process, Android's FLAC and WAV extractors deliver 24-bit files as 16-bit PCM, and say
+  so (D244: float goes to mediaserver only), so on the emulator every format plays as 16-bit.
+  - **Threads.** The engine thread owns the sessions, the audio focus, the ticks and the track's
+    play, pause, volume and position. Each prepared stream has a decoder thread
+    (`SonanceDecode-<session>`), which owns the extractor, the codec and the track's creation,
+    writes and release. The engine thread never waits on it; a decoder stuck in a blocking HTTP
+    call (which retries for about 30 s) releases its resources when the call returns.
+  - **Start, seek and end.** A stream plays once 200 ms are queued. A seek pauses and flushes the
+    track, seeks the extractor to the previous sync point and drops the decoded frames before the
+    target; the latest seek wins and answers every pending one. A stream ends with a buffer of
+    silence rather than `stop()` (after which the position reads 0), and "completed" follows its
+    last frame's playing out (D241).
+  - **Errors (D224, D242).** A missing decoder (ALAC on AOSP) is "format not supported" before any
+    audio; D224's status check tells a bad request from a body no extractor reads; a direct stream
+    whose data ends more than 1 s short of its duration was cut off, a connection error.
+  - **Buffering (D243).** It starts when the track has under 100 ms queued, and completes at 1 s in
+    the track and the extractor's cache, a ¾-full track, or the stream's end.
 - **Network.** Cleartext is allowed to any server (`android/res/xml/network_security_config.xml`), and only system
   certificates are trusted. Safe Browsing and WebView metrics are off. The WebView never navigates
   away from the app's page.
 - **Debug builds only:** WebView DevTools, a `sonance_url` intent extra (an `http://localhost` page
-  or `chrome://crash`, for the device harness `tests/tools/android-*.js`), and the audio-focus drill
-  `sonance_focus_drill`.
+  or `chrome://crash`, for the device harness `tests/tools/android-*.js`), the audio-focus drill
+  `sonance_focus_drill`, the key and keyboard log lines, and the engine's level probe (each
+  stream's peak and RMS at the AudioTrack's input, logged at its end).
 - **targetSdk 35, pinned (G9).** At 36, Android 16 stops delivering `KEYCODE_BACK`; 37 adds a
   local-network permission and stricter background audio. Sideloaded, so no store deadline applies.
 
