@@ -1,10 +1,10 @@
 # Sonance
 
-**A music player for Samsung Tizen TVs, built to stream from your self-hosted Navidrome (or Subsonic-compatible) or Jellyfin server.**
+**A music player for Samsung Tizen TVs and Android TV / Google TV, built to stream from your self-hosted Navidrome (or Subsonic-compatible) or Jellyfin server.**
 
 ![Sonance](screenshots/nowplaying.png)
 
-Sonance turns your Samsung smart TV into a full-featured music player. Browse your library, play albums, search your collection, and enjoy synced lyrics — all from your sofa with just the TV remote.
+Sonance turns your Samsung smart TV, or (since 3.15) your Android TV or Google TV device, into a full-featured music player. Browse your library, play albums, search your collection, and enjoy synced lyrics — all from your sofa with just the TV remote.
 
 This is Version 3 of Sonance — a UI rewrite with a completely new hardware-accelerated interface and multiple library support. **Version 3.11** made it readable and responsive from the sofa: a larger, adjustable interface, a clear focus highlight, faster navigation, and a much richer Now Playing screen. See [CHANGELOG-3.9 to 3.11.md](CHANGELOG-3.9%20to%203.11.md) for what changed. **Version 3.12** brings in the community's contributions — Opus playback, more ways to sort, fuller Home rows and popular songs on artist pages: see [CHANGELOG-3.12.md](CHANGELOG-3.12.md) and [Contributors](#contributors). **Version 3.13** adds Jellyfin servers, accounts without a password included: see [CHANGELOG-3.13.md](CHANGELOG-3.13.md) and [Jellyfin](#jellyfin). **Version 3.14** wraps long lyric lines at whole words at every interface size, and makes holding OK open the options menu on the Samsung silver remote: see [CHANGELOG-3.14.md](CHANGELOG-3.14.md). **Version 3.15** brings the same app to Android TV and Google TV: see [CHANGELOG-3.15.md](CHANGELOG-3.15.md) and [Android TV](#android-tv).
 
@@ -40,7 +40,7 @@ This is Version 3 of Sonance — a UI rewrite with a completely new hardware-acc
 - **Bottom bar** — press Down from anywhere to reach the Now Playing bar; OK opens Now Playing
 - **Hold OK on a song** — an options panel: play next, add to queue, favourite, go to album, go to artist, start radio (similar songs) and show credits; on the queue also play now and remove
 - **D-pad navigation** — fully designed for TV remote control, no mouse or touch needed
-- **Samsung remote media keys** — play, pause, skip, and previous all work natively
+- **Remote media keys** — play, pause, skip, and previous all work natively on the Samsung remote, and on Android TV remotes that have them
 - **Customisable accent colour** — choose from 8 colour themes, applied across the entire app
 - **Background** — the classic solid background, or an optional gradient that follows your accent colour
 - **Launch splash** — the Sonance logo grows in while the app loads
@@ -53,13 +53,17 @@ This is Version 3 of Sonance — a UI rewrite with a completely new hardware-acc
 - **Opus** — Opus files play through your server, converted to MP3 as they stream; seeking works too
 - **Says why** — a track that cannot be played shows its name and whether its format is not supported or it could not be loaded
 
+### Android TV and Google TV
+- **The same app as an APK** — `Sonance3-AndroidTV.apk` runs the same screens, settings and remote behaviour on Android TV and Google TV (Android 8.0+). See [Android TV](#android-tv).
+- **Background playback** — music plays on when you press Home or open another app, and pauses when another app plays sound
+
 ### Home-row icon
-- **Square or wide tile** — `Sonance3.wgt` has a square launcher icon; `Sonance3-Oblong.wgt` shows a wide 16:9 tile on the TV's home row. Same app, so install either one.
+- **Square or wide tile** — `Sonance3.wgt` has a square launcher icon; `Sonance3-Oblong.wgt` shows a wide 16:9 tile on the Samsung TV's home row. Same app, so install either one.
 
 ### Under the hood
 - **Persistent settings** — interface size, accent colour, background and every other preference survive app restarts
 - **Performance overlay** — optional on-screen frame rate and responsiveness readout (Settings → Advanced)
-- **Lightweight** — about 100 KB (160 KB with the wide icon), zero external dependencies, pure vanilla JS
+- **Lightweight** — about 100 KB (160 KB with the wide icon; the Android TV APK about 190 KB), zero external dependencies, pure vanilla JS
 
 ## Screenshots
 
@@ -73,11 +77,14 @@ This is Version 3 of Sonance — a UI rewrite with a completely new hardware-acc
 ## Requirements
 
 - **Samsung Smart TV** — 2019 or newer (Tizen 5.0+). Developed and tested on a Samsung Q90R.
+- **or an Android TV / Google TV device** — Android 8.0 or later (a TV, an NVIDIA SHIELD, a Chromecast with Google TV). See [Android TV](#android-tv).
 - **Navidrome** (or any Subsonic API-compatible server) — running on your local network. Tested with Navidrome 0.64. Song credits and lyrics use OpenSubsonic extensions, which Navidrome provides.
 - **or Jellyfin 12.2** (12.x) — a music library on your local network. See [Jellyfin](#jellyfin) for what differs.
-- **Developer Mode** enabled on the TV — required for sideloading
+- **Developer Mode** enabled on the Samsung TV — required for sideloading
 
 ## Installation
+
+These steps are for Samsung TVs. For Android TV and Google TV, see [Android TV](#android-tv).
 
 ### Option 1: Pre-built .wgt (easiest)
 
@@ -183,6 +190,8 @@ Everything else (browsing every library tab with its sorts and genre filter, alb
 
 On Now Playing the buttons under the progress bar are: shuffle, previous, play/pause, next, repeat, favourite, lyrics, credits (ⓘ) and Focus mode (◐).
 
+On Android TV the same keys work where the remote has them; the SHIELD and Google TV remotes have no colour keys, so use Hold OK for those actions.
+
 ## Settings
 
 Open Settings from the ⚙ icon at the right of the top menu:
@@ -223,6 +232,7 @@ The lyrics panel shows the current line highlighted in bold, with past and upcom
 - **Subsonic REST API** with OpenSubsonic extensions — compatible with Navidrome, Subsonic, Airsonic, and others
 - **Jellyfin API** (12.x) — through a translation adapter (`js/jellyfin-api.js`), so both servers share every screen
 - **Tizen Web App** — packaged as a `.wgt` widget
+- **Android TV host** — a small Java app on Android framework APIs only (no Gradle, no libraries) that runs the same web app in the system WebView and plays audio through MediaCodec and AudioTrack, packaged as an APK
 - **Playwright** — an end-to-end test suite (417 tests, keyboard-only) against a mock server that can answer as Navidrome or as Jellyfin
 
 The app package is ~100 KB and loads instantly. Zero external dependencies at runtime.
