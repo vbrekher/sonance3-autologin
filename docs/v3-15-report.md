@@ -13,6 +13,8 @@ your two decisions (§2): the sleep timer now fires in the background, and the k
 on OK.
 
 Every automated check ran on the Android SDK's Google TV emulator (Android 14, WebView 113).
+**SHIELD re-test (2026-10-23 and 2026-10-28): passed.** 24-bit FLAC, the runaway key, the keyboard, the
+background sleep timer and checklist items 3, 6 and 11 all work; Ogg Vorbis is untested (no files).
 **§3 is the checklist for your SHIELD pass**; the fix round's re-test is its items 2, 3, 6, 11
 and 13.
 
@@ -230,13 +232,13 @@ the AudioTrack's), which AudioFlinger's track for the app matched in format and 
 
 | Format | Emulator (Android 14, AOSP software codecs) | SHIELD |
 |---|---|---|
-| FLAC 16/44.1 | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
-| FLAC 24/96 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 96000 Hz, 2 ch` | |
-| FLAC 24/192 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 192000 Hz, 2 ch` | |
+| FLAC 16/44.1 | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | Plays (re-test) |
+| FLAC 24/96 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 96000 Hz, 2 ch` | Plays, no static (re-test) |
+| FLAC 24/192 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 192000 Hz, 2 ch` | Plays, no static (re-test) |
 | MP3 (192 kb/s) | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
 | AAC (.m4a) | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
 | ALAC (.m4a) | Fails at once: no decoder in AOSP (`no decoder for audio/alac`); the format toast | |
-| Ogg Vorbis | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch`; the duration is a bitrate estimate (D226) | |
+| Ogg Vorbis | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch`; the duration is a bitrate estimate (D226) | Not tested (no files) |
 | Opus (transcoded) | Plays, as the server's MP3 (A4) | |
 | WAV 16 | Plays: `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
 | WAV 24 | Plays at 16-bit (D244): `pcm 16-bit -> 16-bit, 44100 Hz, 2 ch` | |
@@ -380,7 +382,8 @@ Item 6 would show it as Sonance playing on after the other app starts; it should
 - **The release APK** (`Sonance3-AndroidTV.apk`): it needs your keystore (§6). The debug APK is
   built and passes every gate.
 - **The SHIELD pass** (§3): yours. Your first pass led to fix round 1
-  (`tickets/prompt-3.xx-androidtv-fix1.md`); its re-test is items 2, 3, 6, 11 and 13.
+  (`tickets/prompt-3.xx-androidtv-fix1.md`); its re-test (items 2, 3, 6, 11 and 13) passed on
+  2026-10-23 and 2026-10-28. Ogg Vorbis on the SHIELD is still to test.
 - **D226** (Ogg Vorbis's estimated duration) and **ALAC**: no rule changed; item 11 and ticket §8
   Q3 decide. On the new engine Vorbis still reads 1,177 ms for a 6 s file, and a seek lands in
   proportion to the real length.
