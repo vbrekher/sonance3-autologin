@@ -179,7 +179,8 @@ test('R10 not visible on Now Playing (within 2/255 of Solid everywhere) or on Lo
       max: Math.max(...s[i].map((v: number,j: number) => Math.abs(v-g[i][j]))) }))
       .filter(x => x.max > 2);
     console.log('[BACKDROP_DIAG] ' + JSON.stringify({
-      diff: d, changed, solid: solidView.layout, gradient: gradientView.layout
+      diff: d, hotspots: await H.pngDiffHotspots(page, solid, gradient, 2),
+      changed, solid: solidView.layout, gradient: gradientView.layout
     }));
   }
   expect(d.max).toBeLessThanOrEqual(2);

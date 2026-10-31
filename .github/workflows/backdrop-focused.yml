@@ -6,6 +6,7 @@ on:
     paths:
       - css/styles.css
       - e2e/backdrop.spec.ts
+      - e2e/helpers/sonance.js
       - .github/workflows/backdrop-focused.yml
   push:
     branches: [fix/nowplaying-backdrop-ci]
