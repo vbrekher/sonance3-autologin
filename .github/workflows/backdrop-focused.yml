@@ -26,3 +26,11 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test e2e/backdrop.spec.ts --grep "not visible on Now Playing" --retries=0
+      - name: Save paired visual captures
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nowplaying-backdrop-diagnostic
+          path: test-results/nowplaying-*.png
+          if-no-files-found: warn
+          retention-days: 5

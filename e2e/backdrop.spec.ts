@@ -140,7 +140,8 @@ test('R10 not visible on Now Playing (within 2/255 of Solid everywhere) or on Lo
     await H.waitForScreen(page, 'nowplaying');
     await H.settle(page, 900);
     await quiet(page);
-    const shot = await page.screenshot();
+    const shot = await page.screenshot({ path: 'test-results/nowplaying-' +
+      (storage['sonance-backdrop'] === 'gradient' ? 'gradient' : 'solid') + '.png' });
     const layout = await page.evaluate(() => {
       const box = (selector: string) => {
         const el = document.querySelector(selector);
