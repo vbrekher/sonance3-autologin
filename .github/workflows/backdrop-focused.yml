@@ -1,0 +1,25 @@
+name: Now Playing backdrop pixel regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - css/styles.css
+      - e2e/backdrop.spec.ts
+      - .github/workflows/backdrop-focused.yml
+
+permissions:
+  contents: read
+
+jobs:
+  backdrop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test e2e/backdrop.spec.ts --grep "not visible on Now Playing" --retries=0

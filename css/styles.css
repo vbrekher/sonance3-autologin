@@ -805,6 +805,13 @@ html.backdrop-gradient .app-backdrop {
 /* ============================================
    Now Playing Screen (Full-screen)
    ============================================ */
+/* Now Playing is opaque under BOTH Solid and Gradient. Previously only
+   Gradient used an explicit background, so Chromium composited text using
+   LCD subpixel antialiasing there but grayscale antialiasing in Solid.
+   The mismatch produced 119/255 colour fringes around glyphs in the
+   screenshot comparison (also reproducible in upstream Sonance3).
+   An identical opaque base preserves the visual backdrop and stabilises
+   text rendering without weakening the test's 2/255 pixel threshold. */
 .np-screen {
     position: absolute;
     top: 0;
@@ -812,14 +819,6 @@ html.backdrop-gradient .app-backdrop {
     right: 0;
     bottom: 0;
     overflow: hidden;
-}
-
-/* v3.10 R10: with the gradient on, Now Playing gets an opaque base, so the
-   gradient never shows through its backdrop (and a rise or sink does not
-   flash it). The colour is #app's, what shows through with Solid; scoped
-   to Gradient because painting it here, not on #app, moves the blurred
-   backdrop's blend by up to 2/255 (D132), and Solid stays as it was. */
-html.backdrop-gradient .np-screen {
     background: var(--bg-main);
 }
 
