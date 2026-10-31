@@ -375,26 +375,6 @@ function pngDiff(page, a, b) {
         { pngs: [a.toString('base64'), b.toString('base64')] });
 }
 
-/** Diagnostic only: where a pair of captures exceeds a given per-channel delta. */
-function pngDiffHotspots(page, a, b, threshold) {
-    return _pngInPage(page,
-        'var A = imgs[0], B = imgs[1], t = arg, n = 0, max = 0, worst = null;' +
-        'var bounds = { left: A.w, top: A.h, right: -1, bottom: -1 };' +
-        'var bins = []; for (var q = 0; q < 6 * 10; q++) bins.push(0);' +
-        'for (var i = 0; i < A.d.length; i += 4) {' +
-        '  var delta = 0; for (var k = 0; k < 3; k++) delta = Math.max(delta, Math.abs(A.d[i+k]-B.d[i+k]));' +
-        '  if (delta > t) {' +
-        '    var p = i/4, x = p % A.w, y = Math.floor(p / A.w); n++;' +
-        '    bounds.left = Math.min(bounds.left,x); bounds.right = Math.max(bounds.right,x);' +
-        '    bounds.top = Math.min(bounds.top,y); bounds.bottom = Math.max(bounds.bottom,y);' +
-        '    bins[Math.min(5,Math.floor(y*6/A.h))*10+Math.min(9,Math.floor(x*10/A.w))]++;' +
-        '    if (delta > max) { max = delta; worst = { x:x, y:y, solid:Array.from(A.d.slice(i,i+3)), gradient:Array.from(B.d.slice(i,i+3)) }; }' +
-        '  }' +
-        '}' +
-        'return { threshold:t, count:n, max:max, worst:worst, bounds:n?bounds:null, heatmap:bins };',
-        { pngs: [a.toString('base64'), b.toString('base64')], arg: threshold });
-}
-
 /** [r, g, b] of a PNG buffer at each [x, y] in `points`. */
 function pngPixels(page, png, points) {
     return _pngInPage(page,
@@ -438,6 +418,5 @@ module.exports = {
     navTo: navTo,
     watchErrors: watchErrors,
     pngDiff: pngDiff,
-    pngDiffHotspots: pngDiffHotspots,
     pngPixels: pngPixels
 };

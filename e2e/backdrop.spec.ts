@@ -140,50 +140,15 @@ test('R10 not visible on Now Playing (within 2/255 of Solid everywhere) or on Lo
     await H.waitForScreen(page, 'nowplaying');
     await H.settle(page, 900);
     await quiet(page);
-    const shot = await page.screenshot({ path: 'test-results/nowplaying-' +
-      (storage['sonance-backdrop'] === 'gradient' ? 'gradient' : 'solid') + '.png' });
-    const layout = await page.evaluate(() => {
-      const box = (selector: string) => {
-        const el = document.querySelector(selector);
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        const cs = getComputedStyle(el);
-        return { x: r.x, y: r.y, width: r.width, height: r.height,
-          display: cs.display, background: cs.backgroundColor,
-          opacity: cs.opacity, image: cs.backgroundImage.slice(0, 200) };
-      };
-      return { root: document.documentElement.className, nowPlaying: box('.np-screen'),
-        page: box('#page-current'), backdrop: box('#app-backdrop'),
-        nav: box('#top-nav'), image: box('.np-bg-image'),
-        animations: document.getAnimations().map(a => ({ state: a.playState,
-          target: (a.effect as KeyframeEffect)?.target?.id || (a.effect as KeyframeEffect)?.target?.className || '' })).slice(0, 15) };
-    });
-    return { shot, layout };
+    return page.screenshot();
   }
-  const solidView = await npShot({ 'sonance-backdrop': 'solid' });
-  const gradientView = await npShot(GRADIENT);
-  const solid = solidView.shot;
-  const gradient = gradientView.shot;
+  const solid = await npShot({ 'sonance-backdrop': 'solid' });
+  const gradient = await npShot(GRADIENT);
   // With the gradient on, Now Playing's opaque base (D132) blends the
   // blurred backdrop up to 2/255 differently from Solid's; the gradient
   // itself would differ by tens of levels (its accent glow at the top left).
   const d = await H.pngDiff(page, solid, gradient);
   test.info().annotations.push({ type: 'diff', description: JSON.stringify(d) });
-  if (d.max > 2) {
-    // Debug the inherited visual failure without changing its pass threshold.
-    const points: [number,number][] = [];
-    for (const y of [12, 48, 96, 180, 350, 600, 850, 1040, 1068]) {
-      for (const x of [12, 96, 240, 480, 960, 1440, 1820, 1908]) points.push([x,y]);
-    }
-    const [s,g] = await Promise.all([H.pngPixels(page, solid, points), H.pngPixels(page, gradient, points)]);
-    const changed = points.map((pt,i) => ({ pt, solid: s[i], gradient: g[i],
-      max: Math.max(...s[i].map((v: number,j: number) => Math.abs(v-g[i][j]))) }))
-      .filter(x => x.max > 2);
-    console.log('[BACKDROP_DIAG] ' + JSON.stringify({
-      diff: d, hotspots: await H.pngDiffHotspots(page, solid, gradient, 2),
-      changed, solid: solidView.layout, gradient: gradientView.layout
-    }));
-  }
   expect(d.max).toBeLessThanOrEqual(2);
   const [tl] = await H.pngPixels(page, gradient, [[12, 12]]);
   const [tlSolid] = await H.pngPixels(page, solid, [[12, 12]]);

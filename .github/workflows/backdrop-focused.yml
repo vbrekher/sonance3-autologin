@@ -1,4 +1,4 @@
-name: Now Playing backdrop focused regression
+name: Now Playing backdrop pixel regression
 
 on:
   pull_request:
@@ -6,10 +6,7 @@ on:
     paths:
       - css/styles.css
       - e2e/backdrop.spec.ts
-      - e2e/helpers/sonance.js
       - .github/workflows/backdrop-focused.yml
-  push:
-    branches: [fix/nowplaying-backdrop-ci]
 
 permissions:
   contents: read
@@ -26,11 +23,3 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test e2e/backdrop.spec.ts --grep "not visible on Now Playing" --retries=0
-      - name: Save paired visual captures
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nowplaying-backdrop-diagnostic
-          path: test-results/nowplaying-*.png
-          if-no-files-found: warn
-          retention-days: 5
