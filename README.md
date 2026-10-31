@@ -2,6 +2,7 @@
 
 <h1 align="center">Sonance AutoLogin</h1>
 <p align="center">Your music on your Samsung TV. No typing a long password with the remote.</p>
+<p align="center"><a href="https://github.com/vbrekher/sonance3-autologin/actions/workflows/personal-build-tests.yml"><img src="https://github.com/vbrekher/sonance3-autologin/actions/workflows/personal-build-tests.yml/badge.svg" alt="Personal build tests"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a></p>
 <p align="center">
   <a href="docs/INSTALLATION.md">Install guide</a> ·
   <a href="docs/README.ru.md">Русская инструкция</a> ·

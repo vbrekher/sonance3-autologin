@@ -1,6 +1,6 @@
 # Troubleshooting
 
-These are the issues we've actually encountered or expect from the build/installation process. If yours isn't here, [open a bug report](../issues/new/choose) and remove all passwords and stream tokens first.
+These are the issues we've actually encountered or expect from the build/installation process. If yours isn't here, [open a bug report](https://github.com/vbrekher/sonance3-autologin/issues/new/choose) and remove all passwords and stream tokens first.
 
 ## The library shows up, but songs stay at 00:00
 
