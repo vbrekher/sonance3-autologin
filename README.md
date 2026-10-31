@@ -34,11 +34,11 @@ The script asks a few questions:
 ~~~text
 Navidrome URL (include http:// or https://): https://music.example.com
 Username: alex
-Password (hidden; you can paste it):
 Playback [H]TML5 / [A]VPlay (default H):
+Password (hidden; paste is fine):
 ~~~
 
-The password is entered without showing it in the terminal. A local address with a port works too, for example `http://192.168.1.20:4533`; so does a server under a URL path. Prefer HTTPS for servers reachable over the internet.
+The password is requested last, using the terminal's no-echo mode: pasted characters must not appear on screen. A local address with a port works too, for example `http://192.168.1.20:4533`; so does a server under a URL path. Prefer HTTPS for servers reachable over the internet.
 
 Your packages appear in `dist/`:
 
