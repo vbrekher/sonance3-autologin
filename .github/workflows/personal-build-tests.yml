@@ -5,12 +5,14 @@ on:
     paths:
       - scripts/build-personal.mjs
       - tests/personal-build.test.mjs
+      - tests/html5-autonext.test.mjs
       - js/player.js
       - .github/workflows/personal-build-tests.yml
   pull_request:
     paths:
       - scripts/build-personal.mjs
       - tests/personal-build.test.mjs
+      - tests/html5-autonext.test.mjs
       - js/player.js
       - .github/workflows/personal-build-tests.yml
 
@@ -24,4 +26,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/personal-build.test.mjs
+      - run: node --test tests/personal-build.test.mjs tests/html5-autonext.test.mjs

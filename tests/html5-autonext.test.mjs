@@ -60,7 +60,8 @@ function setup({ samsung, repeat = 'none' }) {
             formatDuration(t) { return String(t); }
         },
         AuthManager: { getApi() { return {
-            getStreamUrl(id) { return 'https://example.invalid/rest/stream.view?id=' + id; }
+            getStreamUrl(id) { return 'https://example.invalid/rest/stream.view?id=' + id; },
+            scrobble() { return Promise.resolve(); }
         }; }},
         setTimeout, clearTimeout, Date, Math, Promise, Map, console
     };
@@ -118,8 +119,9 @@ test('Samsung HTML5: normal queue end does not restart playback', () => {
 test('regular desktop browser still has the original two-element preload', () => {
     const { player, primary, preload } = setup({ samsung: false });
     player.playAlbum(tracks(), 0);
+    const preloadBeforeTimeUpdate = preload.loadCount;
     primary.currentTime = 179;
     primary.dispatch('timeupdate');
-    assert.equal(preload.loadCount, 1);
+    assert.equal(preload.loadCount, preloadBeforeTimeUpdate + 1);
     assert.match(preload.src, /id=two/);
 });
