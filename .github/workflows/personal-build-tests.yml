@@ -6,6 +6,7 @@ on:
       - scripts/build-personal.mjs
       - tests/personal-build.test.mjs
       - tests/html5-autonext.test.mjs
+      - tests/hidden-password-pty.py
       - js/player.js
       - .github/workflows/personal-build-tests.yml
   pull_request:
@@ -27,3 +28,4 @@ jobs:
         with:
           node-version: '22'
       - run: node --test tests/personal-build.test.mjs tests/html5-autonext.test.mjs
+      - run: python3 tests/hidden-password-pty.py
