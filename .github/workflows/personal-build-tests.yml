@@ -1,0 +1,31 @@
+name: Personal build tests
+
+on:
+  push:
+    paths:
+      - scripts/build-personal.mjs
+      - tests/personal-build.test.mjs
+      - tests/html5-autonext.test.mjs
+      - tests/hidden-password-pty.py
+      - js/player.js
+      - .github/workflows/personal-build-tests.yml
+  pull_request:
+    paths:
+      - scripts/build-personal.mjs
+      - tests/personal-build.test.mjs
+      - tests/html5-autonext.test.mjs
+      - js/player.js
+      - .github/workflows/personal-build-tests.yml
+
+jobs:
+  personal-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/personal-build.test.mjs tests/html5-autonext.test.mjs
+      - run: python3 tests/hidden-password-pty.py

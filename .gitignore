@@ -57,3 +57,9 @@ node_modules/
 android/build/
 *.jks
 *.keystore
+
+# Local personal builds include your password. Never commit them.
+/dist/
+/personal-config.json
+/private-credentials.json
+/*.personal.wgt

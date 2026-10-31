@@ -21,8 +21,22 @@ var Player = (function() {
     }
 
     // --- Platform Detection ---
-    var IS_TIZEN = typeof window.webapis !== 'undefined' &&
+    // Use HTML5 Audio in personal builds when native AVPlay stalls at 00:00.
+    // The ordinary build still defaults to AVPlay on Samsung TVs.
+    var _preferredAudioBackend = 'auto';
+    try { _preferredAudioBackend = localStorage.getItem('sonance_audio_backend') || 'auto'; }
+    catch (e) { /* storage unavailable: preserve original behaviour */ }
+    var IS_TIZEN = _preferredAudioBackend !== 'html5' &&
+                   typeof window.webapis !== 'undefined' &&
                    typeof window.webapis.avplay !== 'undefined';
+
+    // Samsung's HTML5 backend should keep one media element for the full queue.
+    // Switching to the second <audio> element at the track boundary can lose
+    // the user-initiated playback allowance, leaving the next track paused.
+    // Keep the original two-element gapless path on ordinary browser builds.
+    var SINGLE_HTML5_ON_TIZEN = !IS_TIZEN && _preferredAudioBackend === 'html5' &&
+                               typeof window.webapis !== 'undefined' &&
+                               typeof window.webapis.avplay !== 'undefined';
 
     log('Player', 'Platform: ' + (IS_TIZEN ? 'Tizen (AVPlay)' : 'Browser (HTML5 Audio)'));
 
@@ -257,7 +271,10 @@ var Player = (function() {
 
         if (!IS_TIZEN) {
             _audio = document.getElementById('sonance-audio');
-            _preloadAudio = document.getElementById('sonance-audio-preload');
+            // On Samsung HTML5, automatic next uses the same audio element.
+            // Do not pre-load in a second element or swap elements on 'ended'.
+            _preloadAudio = SINGLE_HTML5_ON_TIZEN ? null :
+                document.getElementById('sonance-audio-preload');
             if (_audio) {
                 _audio.volume = state.volume;
                 _attachHtml5Listeners(_audio);
