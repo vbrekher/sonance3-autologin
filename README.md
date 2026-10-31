@@ -5,6 +5,7 @@
 <p align="center"><a href="https://github.com/vbrekher/sonance3-autologin/actions/workflows/personal-build-tests.yml"><img src="https://github.com/vbrekher/sonance3-autologin/actions/workflows/personal-build-tests.yml/badge.svg" alt="Personal build tests"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a></p>
 <p align="center">
   <a href="docs/INSTALLATION.md">Install guide</a> ·
+  <a href="docs/README.nl.md">Nederlandse handleiding</a> ·
   <a href="docs/README.ru.md">Русская инструкция</a> ·
   <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a> ·
   <a href="https://github.com/MrSimmo/sonance3">Original Sonance3</a>
@@ -84,6 +85,7 @@ Original Sonance3 targets Samsung Tizen 5.0+ (2019 or newer). The successful Tiz
 | I want to… | Read |
 | --- | --- |
 | Build and install my personal WGT | [Installation](docs/INSTALLATION.md) |
+| Read the guide in Dutch | [Nederlandse handleiding](docs/README.nl.md) |
 | Follow instructions in Russian | [Русская инструкция](docs/README.ru.md) |
 | Fix 00:00 playback, missing songs or installation errors | [Troubleshooting](docs/TROUBLESHOOTING.md) |
 | Know whether a format / TV is supported | [Compatibility](docs/COMPATIBILITY.md) |

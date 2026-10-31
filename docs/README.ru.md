@@ -74,4 +74,4 @@ npm run build:personal
 
 Основу плеера создали [MrSimmo и участники Sonance3](https://github.com/MrSimmo/sonance3). Это неофициальный форк. Код распространяется по GNU GPL v3.
 
-[English README](../README.md)
+[English README](../README.md) · [Nederlandse handleiding](README.nl.md)
