@@ -21,7 +21,13 @@ var Player = (function() {
     }
 
     // --- Platform Detection ---
-    var IS_TIZEN = typeof window.webapis !== 'undefined' &&
+    // Use HTML5 Audio in personal builds when native AVPlay stalls at 00:00.
+    // The ordinary build still defaults to AVPlay on Samsung TVs.
+    var _preferredAudioBackend = 'auto';
+    try { _preferredAudioBackend = localStorage.getItem('sonance_audio_backend') || 'auto'; }
+    catch (e) { /* storage unavailable: preserve original behaviour */ }
+    var IS_TIZEN = _preferredAudioBackend !== 'html5' &&
+                   typeof window.webapis !== 'undefined' &&
                    typeof window.webapis.avplay !== 'undefined';
 
     log('Player', 'Platform: ' + (IS_TIZEN ? 'Tizen (AVPlay)' : 'Browser (HTML5 Audio)'));
