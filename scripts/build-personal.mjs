@@ -65,15 +65,23 @@ export function personalWidgetConfig(xml) {
         .replace('<name>Sonance</name>', '<name>Sonance AutoLogin</name>');
 }
 
-async function ask(rl, prompt, secret = false) {
-    if (!secret) return rl.question(prompt);
-    process.stdout.write(prompt);
-    const write = rl._writeToOutput;
-    rl._writeToOutput = function () {};
-    try { return await rl.question(''); }
-    finally {
-        rl._writeToOutput = write;
-        process.stdout.write('\n');
+// Read from the controlling terminal with echo disabled by Bash's built-in
+// read -s. Do NOT use readline._writeToOutput here: readline can still echo
+// pasted text and the original prompt could disappear on macOS terminals.
+// The password is never supplied in argv, a command line, or a GitHub action.
+export function readHiddenPassword() {
+    try {
+        return execFileSync('bash', ['-c', [
+            'set -e',
+            'IFS= read -r -s -p "Password (hidden; paste is fine): " sonance_password < /dev/tty',
+            'printf "\\n" > /dev/tty',
+            'printf "%s" "$sonance_password"'
+        ].join('\n')], {
+            encoding: 'utf8',
+            stdio: ['inherit', 'pipe', 'inherit']
+        });
+    } catch (e) {
+        throw new Error('Hidden password input failed. Run this script in a local interactive Terminal.');
     }
 }
 
@@ -104,13 +112,15 @@ export async function main() {
     let serverUrl, username, password, engine;
     try {
         console.log('\nSonance AutoLogin — personal TV build\n');
-        serverUrl = normalizeServerUrl(await ask(rl, 'Navidrome URL (include http:// or https://): '));
-        username = (await ask(rl, 'Username: ')).trim();
-        password = await ask(rl, 'Password (hidden; you can paste it): ', true);
-        if (!username || !password) throw new Error('Username and password cannot be empty.');
-        const selection = (await ask(rl, 'Playback [H]TML5 / [A]VPlay (default H): ')).trim().toLowerCase();
+        serverUrl = normalizeServerUrl(await rl.question('Navidrome URL (include http:// or https://): '));
+        username = (await rl.question('Username: ')).trim();
+        const selection = (await rl.question('Playback [H]TML5 / [A]VPlay (default H): ')).trim().toLowerCase();
         engine = selection === 'a' || selection === 'avplay' ? 'avplay' : 'html5';
     } finally { rl.close(); }
+    // Close readline BEFORE asking for the secret. Otherwise its terminal
+    // handlers can leak pasted password characters into visible scrollback.
+    password = readHiddenPassword();
+    if (!username || !password) throw new Error('Username and password cannot be empty.');
 
     if (serverUrl.startsWith('http://')) {
         console.warn('Warning: HTTP is not encrypted. Use HTTPS for internet-facing servers.');
