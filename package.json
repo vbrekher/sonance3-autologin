@@ -1,16 +1,26 @@
 {
-  "name": "sonance-3",
+  "name": "sonance3-autologin",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Local personal WGT builder and HTML5 playback option for Sonance3 on Samsung Tizen",
   "directories": {
     "doc": "docs",
     "test": "tests"
   },
-  "scripts": {},
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "scripts": {
+    "build:personal": "node scripts/build-personal.mjs",
+    "test:personal": "node --test tests/personal-build.test.mjs",
+    "test:e2e": "playwright test"
+  },
+  "keywords": [
+    "sonance",
+    "tizen",
+    "samsung-tv",
+    "navidrome",
+    "subsonic",
+    "autologin"
+  ],
+  "author": "Sonance3 contributors and Sonance AutoLogin community",
+  "license": "GPL-3.0-only",
   "type": "commonjs",
   "devDependencies": {
     "@playwright/test": "^1.63.0",
