@@ -1,35 +1,51 @@
-# Sonance AutoLogin
+<p align="center"><img src="screenshots/logo.png" alt="Sonance artwork" width="140"></p>
 
-**Music on your Samsung TV, without typing a long password with the remote.**
+<h1 align="center">Sonance AutoLogin</h1>
+<p align="center">Your music on your Samsung TV. No typing a long password with the remote.</p>
+<p align="center">
+  <a href="docs/INSTALLATION.md">Install guide</a> ·
+  <a href="docs/README.ru.md">Русская инструкция</a> ·
+  <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a> ·
+  <a href="https://github.com/MrSimmo/sonance3">Original Sonance3</a>
+</p>
 
-Sonance AutoLogin is a small fork of [Sonance3](https://github.com/MrSimmo/sonance3). Build a version of the app for your own Navidrome server on your computer, then install it on your Samsung TV. Your server address and sign-in details are already there when the app opens.
+---
 
-You can run Navidrome at home, on a VPS or any other host. There's no cloud account or special hosting provider involved.
+Sonance AutoLogin is a community fork of [Sonance3 by MrSimmo](https://github.com/MrSimmo/sonance3). It builds a personal Samsung Tizen app with **your own Navidrome server URL, username and password** already configured. Fill them in once on your computer, install the resulting WGT on the TV, and open your library.
 
-We didn't replace Sonance's interface. You still get albums, playlists, search, synced lyrics, the play queue, remote controls and the rest of the original player.
+Navidrome can be hosted at home, on a VPS, or anywhere else. **Bunny is not required.** No accounts with this project, no remote build service, and no typing credentials with the TV remote.
 
-![Now playing in Sonance](screenshots/nowplaying.png)
+### See the player
 
-## What's different here?
+<p align="center"><img src="screenshots/nowplaying.png" alt="Now Playing screen in Sonance3" width="880"></p>
 
-- **Set it up on your computer, not your TV.** Paste your server URL, username and password into a local script just once.
-- **Choose how music plays.** The personal builder defaults to HTML5 Audio. The original Samsung AVPlay engine is still available as an option.
-- **Keep your original Sonance app.** A personal build installs as a separate application named **Sonance AutoLogin**.
-- **Pick your icon.** The builder gives you a square WGT and one with a wide TV home-screen tile.
+| Browse albums | Explore playlists |
+| :---: | :---: |
+| <img src="screenshots/album.png" alt="Album screen" width="420"> | <img src="screenshots/playlists.png" alt="Playlists screen" width="420"> |
 
-That's it. Everything else stays close to Sonance3.
+*Images are from the original Sonance3 player. The look and core library features are preserved in this fork.*
 
-## Build your own app (macOS / Linux)
+### What's different from Sonance3?
 
-You need **Node.js 18 or newer**, plus **bash**, **zip**, **unzip** and **perl**. The standard Sonance build uses `npx` for its minifiers; the first run may download them.
+- **Personal WGT builder.** Enter the URL, username and password once on your Mac or Linux computer. The builder makes your own `.wgt` files.
+- **HTML5 Audio on Samsung.** An alternative to Samsung AVPlay for TVs where the track never starts or gets stuck at 00:00. HTML5 is the default in *personal* builds; AVPlay remains an option.
+- **Automatic next track.** Samsung HTML5 builds use the same audio element between tracks instead of swapping two elements at the end of a song.
+- **Installs separately.** The personal app is called **Sonance AutoLogin** and does not replace the original Sonance3.
+- **Two home-screen icons.** Pick a wide or a square one.
+
+The rest is Sonance: artists, albums, playlists, synced lyrics, search, favourites, the playback queue, and remote-control navigation. All credit for that goes to the upstream project.
+
+## Quick start
+
+**Requirements:** macOS or Linux, Node.js 18+, bash, zip, unzip, perl, and internet for the first build. The upstream build uses npm/npx for minification.
 
 ~~~bash
 git clone https://github.com/vbrekher/sonance3-autologin.git
 cd sonance3-autologin
-node scripts/build-personal.mjs
+npm run build:personal
 ~~~
 
-The script asks a few questions:
+During setup you'll be asked for:
 
 ~~~text
 Navidrome URL (include http:// or https://): https://music.example.com
@@ -38,66 +54,61 @@ Playback [H]TML5 / [A]VPlay (default H):
 Password (hidden; paste is fine):
 ~~~
 
-The password is requested last, using the terminal's no-echo mode: pasted characters must not appear on screen. A local address with a port works too, for example `http://192.168.1.20:4533`; so does a server under a URL path. Prefer HTTPS for servers reachable over the internet.
+Paste the password normally. **Nothing is displayed while you type it.** The password prompt comes last.
 
-Your packages appear in `dist/`:
+The builder produces two files in `dist/`. They contain the same app, so **install only one**:
 
-| File | Launcher |
+| Your WGT | Home-screen icon |
 | --- | --- |
-| `Sonance-AutoLogin-Oblong.wgt` | Wide 16:9 home-screen tile |
-| `Sonance-AutoLogin-Square.wgt` | Square icon |
+| `dist/Sonance-AutoLogin-Oblong.wgt` | Wide, 16:9 |
+| `dist/Sonance-AutoLogin-Square.wgt` | Square |
 
-Install **only one** of them. They have the same application ID.
+Install it with [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung): enable Developer Mode on the TV, connect the TV and computer to the same network, then select the **custom WGT** file in Apps2Samsung. The installer can re-sign the package for your TV.
 
-## Install it on Samsung Tizen
+**New to Samsung sideloading?** Read the [step-by-step installation guide](docs/INSTALLATION.md) first. Windows users can see the experimental [WSL notes](docs/INSTALLATION.md#windows).
 
-1. Turn on Developer Mode on your TV.
-2. Connect the TV and computer to the same network.
-3. Open [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung).
-4. Select your personal `.wgt` and install it. Re-sign it if the app asks.
-5. Open **Sonance AutoLogin** on the TV.
+> **Private build = private password.** The generated WGT embeds your password, which anyone with the file can extract. Never share your personal WGT or upload it to GitHub Releases/Issues/Actions. Use a dedicated, limited-access Navidrome account for the TV. Read [Security](SECURITY.md).
 
-The app will use the connection details you supplied while building. If they are invalid or your server is offline, Sonance may show its regular sign-in screen.
+## Which TVs work?
 
-This is for Samsung TVs supported by upstream Sonance3 (Tizen 5.0+). The HTML5 workaround has worked on a Samsung UE43DU7100UXUA with Tizen 9. We have **not** tested every TV model or audio codec.
+| TV | Audio mode | Result |
+| --- | --- | --- |
+| Samsung UE43DU7100UXUA, Tizen 9.0 | HTML5 Audio | **Confirmed on device:** sign-in, playback, and automatic next track |
+| Other Samsung TVs supported by Sonance3 | HTML5 or AVPlay | Not independently verified by this fork |
 
-## Keep your build private
+Original Sonance3 targets Samsung Tizen 5.0+ (2019 or newer). The successful Tizen 9 test does **not** prove every model and codec will work. More details: [Compatibility](docs/COMPATIBILITY.md).
 
-**Your personal WGT contains your server password in a readable form.** The password is also stored by the app in the TV's local storage. This is how sign-in without the remote works.
+## Helpful links
 
-The build script runs on your own computer. It does not upload those details to GitHub or to us. Still, treat the finished WGT like a password:
+| I want to… | Read |
+| --- | --- |
+| Build and install my personal WGT | [Installation](docs/INSTALLATION.md) |
+| Follow instructions in Russian | [Русская инструкция](docs/README.ru.md) |
+| Fix 00:00 playback, missing songs or installation errors | [Troubleshooting](docs/TROUBLESHOOTING.md) |
+| Know whether a format / TV is supported | [Compatibility](docs/COMPATIBILITY.md) |
+| Change my password or update the app | [FAQ](docs/FAQ.md) |
+| Report a problem or contribute a fix | [Contributing](CONTRIBUTING.md) |
+| Understand what the WGT contains | [Security](SECURITY.md) |
 
-- **Do not publish it** in Releases, Issues, Actions artifacts or anywhere else.
-- Don't run personal builds in public CI.
-- Use a separate, limited-permission Navidrome account for your TV if possible.
-- If a personal WGT leaks, change its account password.
+### A note on downloads
 
-The `dist/` directory is ignored by Git. Generic upstream WGT files in the repository are not personalised; use the script to create yours.
+**There is no universal preconfigured WGT to download.** Each user needs to run the personal builder. The `Sonance3.wgt`, `Sonance3-Oblong.wgt` and Android APK in the repository are inherited **upstream builds**, not preconfigured AutoLogin releases. Do not expect them to log in automatically.
 
-## Playback: HTML5 or AVPlay?
+The repository currently has no tagged AutoLogin release. Use the source as documented here; see [Release policy](docs/RELEASING.md) for how future public releases will be handled.
 
-The original Sonance uses Samsung AVPlay on a TV. On some setups, the library loads but a track sits at **00:00** without playing. Using HTML5 Audio fixed that symptom in a test on a Samsung Tizen 9 TV.
-
-That's why HTML5 is the default **for personal builds**. The original app still uses AVPlay unless you deliberately select otherwise. HTML5 won't necessarily support every format or device, and this fork doesn't claim a universal fix.
-
-If something doesn't play, check whether that same file works in the Samsung browser. When opening an issue, include your TV model, Tizen version, audio format and chosen backend — **never a stream URL containing authentication parameters**.
-
-## Navidrome and Jellyfin
-
-The personal auto-login builder is for **Navidrome / password-based Subsonic-compatible servers**. Original Sonance3 also supports Jellyfin, but Jellyfin's session flow is different: automatic Jellyfin setup is **not implemented** here yet.
-
-## For developers
+## Development
 
 ~~~bash
-node --test tests/personal-build.test.mjs
+npm run test:personal
+node --test tests/html5-autonext.test.mjs
+python3 tests/hidden-password-pty.py
 ~~~
 
-The usual `./build.sh` still creates the generic Sonance packages. The personal builder builds in a temporary copy and doesn't write private credentials into your source checkout.
+The normal upstream `./build.sh` still builds generic Sonance packages. The personal builder works in a temporary copy of the app and does not write passwords into the tracked source files. The resulting private files live only in the ignored `dist/` directory.
 
-## Credit
+## Thanks and license
 
-All the hard work behind the music player comes from [MrSimmo's Sonance3](https://github.com/MrSimmo/sonance3) and its contributors. This is an independent community fork, not an official version. If you like it, please give the original project a star.
+Sonance3 and its interface were created by [MrSimmo](https://github.com/MrSimmo/sonance3) and its contributors. This project is an independent fork and is not affiliated with or endorsed by the original author. Please support the upstream project.
 
-The code remains under [GNU GPL v3](LICENSE). If you redistribute modified binaries, include or provide access to the corresponding source code and keep the license notices.
+Distributed under [GNU GPL v3](LICENSE). If you redistribute modified packages, follow the license requirements, including making the corresponding source available.
 
-[Инструкция на русском](docs/README.ru.md)
